@@ -24,27 +24,43 @@ const handleSubmit = async () => {
     if (res.ok) {
       // If login is successful, navigate to HomePage
       const userId = data.userId || data.user_id; // get userId from response
+      const verified = data.verified; // get verified bool
+    
       if (!userId) {
         Alert.alert("Error", "Login succeeded but no user ID returned.");
         return;
       }
-
-      Alert.alert(
-        "Success",
-        data.message || "Login successful!",
-        [
-          {
-            text: "OK",
-            onPress: () => router.replace(`/Homepage?userId=${userId}`), // navigate to HomePage
-          },
-        ],
-        { cancelable: false }
-      );
-
+    
+      if (verified === 1) {
+        // Verified, let them in
+        Alert.alert(
+          "Success",
+          data.message || "Login successful!",
+          [
+            {
+              text: "OK",
+              onPress: () => router.replace(`/Homepage?userId=${userId}`),
+            },
+          ],
+          { cancelable: false }
+        );
+      } else {
+        Alert.alert(
+          "Verification Required",
+          "Please enter the OTP sent to your email.",
+          [
+            {
+              text: "OK",
+              onPress: () => router.replace(`/account/VerifyOTP?userId=${userId}`),
+            },
+          ],
+          { cancelable: false }
+        );
+      }
     } else {
-      // Login failed
-      Alert.alert("Login Failed", data.message || "Please check your credentials");
-    }
+      // Request failed (bad credentials, server error, etc.)
+      Alert.alert("Login Failed", data.message || "Invalid username or password.");
+    }    
 
   } catch (err) {
     console.error("Login error:", err);
@@ -57,6 +73,8 @@ const handleSubmit = async () => {
       <Text style={styles.title}>Login</Text>
       <TextInput
         placeholder="Email"
+        keyboardType="email-address"
+        autoCapitalize="none"
         style={styles.input}
         onChangeText={(text) => handleChange("email_add", text)}
       />
@@ -66,20 +84,34 @@ const handleSubmit = async () => {
         secureTextEntry
         onChangeText={(text) => handleChange("password", text)}
       />
-      <Button title="Login" onPress={handleSubmit} />
+      <TouchableOpacity style={styles.button} onPress={handleSubmit}>
+        <Text style={styles.buttonText}>Log In</Text>
+      </TouchableOpacity>
 
-      <TouchableOpacity
-        onPress={() => router.push("account/Signup")}style={{ marginTop: 10 }}>
-        <Text style={{ color: "blue", textAlign: "center" }}>
-          Don't have an account? Signup here
-        </Text>
+      <TouchableOpacity onPress={() => router.push("/account/ForgotPassword")}>
+        <Text style={styles.link}>Forgot Password?</Text>
+      </TouchableOpacity>
+
+      <TouchableOpacity onPress={() => router.push("/account/Signup")}>
+        <Text style={styles.link}>Don't have an account? Sign Up</Text>
       </TouchableOpacity>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { padding: 20 },
-  title: { fontSize: 24, marginBottom: 10 },
-  input: { borderWidth: 1, marginBottom: 10, padding: 8, borderRadius: 5 },
+  container: { flex: 1, backgroundColor: "#f8f9fa", padding: 20, justifyContent: "center" },
+  title: { fontSize: 26, fontWeight: "bold", marginBottom: 30, textAlign: "center" },
+  input: {
+    height: 50,
+    borderColor: "#ccc",
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 15,
+    marginBottom: 15,
+    backgroundColor: "#fff",
+  },
+  button: { backgroundColor: "#28a745", paddingVertical: 15, borderRadius: 10, marginTop: 10, marginBottom: 20 },
+  buttonText: { color: "#fff", fontSize: 18, fontWeight: "bold", textAlign: "center" },
+  link: { color: "#007bff", fontSize: 14, textAlign: "center", marginTop: 5 },
 });

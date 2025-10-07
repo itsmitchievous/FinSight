@@ -8,6 +8,7 @@ import {
   StyleSheet,
   Alert,
   ActivityIndicator,
+  Modal,
 } from "react-native";
 import { useRouter, useLocalSearchParams } from "expo-router";
 import { API_BASE_URL } from "../config";
@@ -17,23 +18,33 @@ export default function AddBudget() {
   const [loading, setLoading] = useState(false);
   const [loadingCategories, setLoadingCategories] = useState(false);
 
-  // Income tracking
-  const [walletIncome, setWalletIncome] = useState(0);
-  const [availableBalance, setAvailableBalance] = useState(0);
+  // All wallets data
+  const [wallets, setWallets] = useState([]);
+  const [totalWalletIncome, setTotalWalletIncome] = useState(0);
 
   // Step 1: Income & Rule Selection
-  const [totalIncome, setTotalIncome] = useState("");
+  const [budgetAmount, setBudgetAmount] = useState("");
   const [budgetRule, setBudgetRule] = useState("50-30-20");
   const [budgetPeriod, setBudgetPeriod] = useState("Monthly");
 
-  // Step 2: Category Allocation
+  // Step 2: Category Allocation with Wallet Selection
   const [needsCategories, setNeedsCategories] = useState([]);
   const [wantsCategories, setWantsCategories] = useState([]);
   const [savingsCategories, setSavingsCategories] = useState([]);
 
+  // Format: { category_id: { wallet_id: X, amount: Y, category_name: Z } }
   const [needsAllocations, setNeedsAllocations] = useState({});
   const [wantsAllocations, setWantsAllocations] = useState({});
   const [savingsAllocations, setSavingsAllocations] = useState({});
+
+  // Track remaining balance per wallet
+  const [walletBalances, setWalletBalances] = useState({});
+
+  // Modal states
+  const [showCategoryModal, setShowCategoryModal] = useState(false);
+  const [showWalletModal, setShowWalletModal] = useState(false);
+  const [currentAllocationCategory, setCurrentAllocationCategory] = useState(null);
+  const [currentAllocationType, setCurrentAllocationType] = useState(null);
 
   // Calculated amounts
   const [needsAmount, setNeedsAmount] = useState(0);
@@ -41,30 +52,65 @@ export default function AddBudget() {
   const [savingsAmount, setSavingsAmount] = useState(0);
 
   const router = useRouter();
-  const { userId, walletId } = useLocalSearchParams();
+  const { userId } = useLocalSearchParams();
   const numericUserId = Number(userId);
-  const numericWalletId = Number(walletId);
 
   const budgetRules = {
     "50-30-20": { needs: 50, wants: 30, savings: 20 },
     "70-20-10": { needs: 70, wants: 20, savings: 10 },
   };
 
-  // Fetch wallet income on component mount
+  // Fetch all wallets income on mount
   useEffect(() => {
-    fetchWalletIncome();
+    fetchAllWalletsIncome();
   }, []);
 
-  const fetchWalletIncome = async () => {
+  // Initialize wallet balances when wallets are loaded
+  useEffect(() => {
+    if (wallets.length > 0) {
+      const balances = {};
+      wallets.forEach(wallet => {
+        balances[wallet.wallet_id] = wallet.total_income;
+      });
+      setWalletBalances(balances);
+    }
+  }, [wallets]);
+
+  // Recalculate wallet balances whenever allocations change
+  useEffect(() => {
+    if (wallets.length > 0) {
+      const balances = {};
+      wallets.forEach(wallet => {
+        balances[wallet.wallet_id] = wallet.total_income;
+      });
+
+      // Deduct all allocations
+      const allAllocations = [
+        ...Object.values(needsAllocations),
+        ...Object.values(wantsAllocations),
+        ...Object.values(savingsAllocations)
+      ];
+
+      allAllocations.forEach(allocation => {
+        if (allocation.wallet_id && allocation.amount > 0) {
+          balances[allocation.wallet_id] -= allocation.amount;
+        }
+      });
+
+      setWalletBalances(balances);
+    }
+  }, [needsAllocations, wantsAllocations, savingsAllocations, wallets]);
+
+  const fetchAllWalletsIncome = async () => {
     try {
       const response = await fetch(
-        `${API_BASE_URL}/wallet-available-balance?user_id=${numericUserId}&wallet_id=${numericWalletId}`
+        `${API_BASE_URL}/total-income-all-wallets?user_id=${numericUserId}`
       );
       const data = await response.json();
 
       if (response.ok) {
-        setWalletIncome(data.total_income);
-        setAvailableBalance(data.available_balance);
+        setWallets(data.wallets || []);
+        setTotalWalletIncome(data.total_income || 0);
       }
     } catch (error) {
       console.error("Error fetching wallet income:", error);
@@ -72,15 +118,15 @@ export default function AddBudget() {
   };
 
   useEffect(() => {
-    if (totalIncome && budgetRule !== "Custom") {
-      const income = parseFloat(totalIncome) || 0;
+    if (budgetAmount && budgetRule !== "Custom") {
+      const income = parseFloat(budgetAmount) || 0;
       const rule = budgetRules[budgetRule];
       
       setNeedsAmount((income * rule.needs) / 100);
       setWantsAmount((income * rule.wants) / 100);
       setSavingsAmount((income * rule.savings) / 100);
     }
-  }, [totalIncome, budgetRule]);
+  }, [budgetAmount, budgetRule]);
 
   const fetchCategoriesByType = async (type) => {
     try {
@@ -103,36 +149,24 @@ export default function AddBudget() {
 
   const handleNext = async () => {
     if (step === 1) {
-      if (!totalIncome || parseFloat(totalIncome) <= 0) {
-        Alert.alert("Invalid Input", "Please enter a valid income amount");
+      if (!budgetAmount || parseFloat(budgetAmount) <= 0) {
+        Alert.alert("Invalid Input", "Please enter a valid budget amount");
         return;
       }
 
-      // Check if wallet has any income
-      if (walletIncome === 0) {
+      if (totalWalletIncome === 0) {
         Alert.alert(
           "No Income Found",
-          "You need to add income to this wallet before creating a budget. Would you like to add income now?",
-          [
-            { text: "Cancel", style: "cancel" },
-            {
-              text: "Add Income",
-              onPress: () => {
-                router.push(
-                  `/income/AddIncome?userId=${numericUserId}&walletId=${numericWalletId}`
-                );
-              },
-            },
-          ]
+          "You need to add income to at least one wallet before creating a budget.",
+          [{ text: "OK" }]
         );
         return;
       }
 
-      // Check if budget exceeds available balance
-      if (parseFloat(totalIncome) > availableBalance) {
+      if (parseFloat(budgetAmount) > totalWalletIncome) {
         Alert.alert(
-          "Insufficient Balance",
-          `Your budget amount (₱${parseFloat(totalIncome).toLocaleString()}) cannot exceed your available balance (₱${availableBalance.toLocaleString()}).\n\nTotal Income: ₱${walletIncome.toLocaleString()}\nAvailable: ₱${availableBalance.toLocaleString()}`,
+          "Insufficient Income",
+          `Your budget amount (₱${parseFloat(budgetAmount).toLocaleString()}) cannot exceed your total wallet income (₱${totalWalletIncome.toLocaleString()}).`,
           [{ text: "OK" }]
         );
         return;
@@ -160,16 +194,171 @@ export default function AddBudget() {
     }
   };
 
-  const handleAllocationChange = (categoryId, amount, type) => {
+  const handleAddCategory = (type) => {
+    setCurrentAllocationType(type);
+    setShowCategoryModal(true);
+  };
+
+  const handleSelectCategory = (category) => {
+    const type = currentAllocationType;
+    let allocations;
+    
+    if (type === "needs") allocations = needsAllocations;
+    else if (type === "wants") allocations = wantsAllocations;
+    else allocations = savingsAllocations;
+
+    // Check if category already added
+    if (allocations[category.category_id]) {
+      Alert.alert("Already Added", "This category is already in your budget");
+      setShowCategoryModal(false);
+      return;
+    }
+
+    // Add category with default values
+    if (type === "needs") {
+      setNeedsAllocations({ 
+        ...needsAllocations, 
+        [category.category_id]: { 
+          wallet_id: null, 
+          amount: 0,
+          category_name: category.category_name 
+        } 
+      });
+    } else if (type === "wants") {
+      setWantsAllocations({ 
+        ...wantsAllocations, 
+        [category.category_id]: { 
+          wallet_id: null, 
+          amount: 0,
+          category_name: category.category_name 
+        } 
+      });
+    } else if (type === "savings") {
+      setSavingsAllocations({ 
+        ...savingsAllocations, 
+        [category.category_id]: { 
+          wallet_id: null, 
+          amount: 0,
+          category_name: category.category_name 
+        } 
+      });
+    }
+
+    setShowCategoryModal(false);
+  };
+
+  const handleRemoveCategory = (categoryId, type) => {
+    if (type === "needs") {
+      const updated = { ...needsAllocations };
+      delete updated[categoryId];
+      setNeedsAllocations(updated);
+    } else if (type === "wants") {
+      const updated = { ...wantsAllocations };
+      delete updated[categoryId];
+      setWantsAllocations(updated);
+    } else if (type === "savings") {
+      const updated = { ...savingsAllocations };
+      delete updated[categoryId];
+      setSavingsAllocations(updated);
+    }
+  };
+
+  const handleAllocationChange = (categoryId, walletId, amount, type) => {
     const numAmount = parseFloat(amount) || 0;
 
-    if (type === "needs") {
-      setNeedsAllocations({ ...needsAllocations, [categoryId]: numAmount });
-    } else if (type === "wants") {
-      setWantsAllocations({ ...wantsAllocations, [categoryId]: numAmount });
-    } else if (type === "savings") {
-      setSavingsAllocations({ ...savingsAllocations, [categoryId]: numAmount });
+    // Get current allocation for this category
+    let currentAllocation;
+    if (type === "needs") currentAllocation = needsAllocations[categoryId];
+    else if (type === "wants") currentAllocation = wantsAllocations[categoryId];
+    else currentAllocation = savingsAllocations[categoryId];
+
+    // If wallet is selected, check if it has enough balance
+    if (walletId && numAmount > 0) {
+      const wallet = wallets.find(w => w.wallet_id === walletId);
+      if (wallet) {
+        // Calculate what the remaining balance would be
+        let availableBalance = wallet.total_income;
+        
+        // Deduct all current allocations for this wallet
+        const allAllocations = [
+          ...Object.values(needsAllocations),
+          ...Object.values(wantsAllocations),
+          ...Object.values(savingsAllocations)
+        ];
+
+        allAllocations.forEach(allocation => {
+          if (allocation.wallet_id === walletId && allocation.amount > 0) {
+            availableBalance -= allocation.amount;
+          }
+        });
+
+        // Add back the current category's allocation if it exists and is from the same wallet
+        if (currentAllocation && currentAllocation.wallet_id === walletId) {
+          availableBalance += currentAllocation.amount;
+        }
+
+        // Check if new amount exceeds available balance
+        if (numAmount > availableBalance) {
+          Alert.alert(
+            "Insufficient Wallet Balance",
+            `${wallet.wallet_name} only has ₱${availableBalance.toFixed(2)} available.\n\nTotal Income: ₱${wallet.total_income.toLocaleString()}\nAlready Allocated: ₱${(wallet.total_income - availableBalance).toFixed(2)}\nAvailable: ₱${availableBalance.toFixed(2)}`
+          );
+          return;
+        }
+      }
     }
+
+    if (type === "needs") {
+      setNeedsAllocations({ 
+        ...needsAllocations, 
+        [categoryId]: { 
+          wallet_id: walletId, 
+          amount: numAmount,
+          category_name: currentAllocation?.category_name 
+        } 
+      });
+    } else if (type === "wants") {
+      setWantsAllocations({ 
+        ...wantsAllocations, 
+        [categoryId]: { 
+          wallet_id: walletId, 
+          amount: numAmount,
+          category_name: currentAllocation?.category_name 
+        } 
+      });
+    } else if (type === "savings") {
+      setSavingsAllocations({ 
+        ...savingsAllocations, 
+        [categoryId]: { 
+          wallet_id: walletId, 
+          amount: numAmount,
+          category_name: currentAllocation?.category_name 
+        } 
+      });
+    }
+  };
+
+  const handleOpenWalletModal = (categoryId, type) => {
+    setCurrentAllocationCategory({ categoryId, type });
+    setShowWalletModal(true);
+  };
+
+  const handleSelectWallet = (wallet) => {
+    const { categoryId, type } = currentAllocationCategory;
+    
+    let currentAllocation;
+    if (type === "needs") currentAllocation = needsAllocations[categoryId];
+    else if (type === "wants") currentAllocation = wantsAllocations[categoryId];
+    else currentAllocation = savingsAllocations[categoryId];
+
+    handleAllocationChange(
+      categoryId,
+      wallet.wallet_id,
+      currentAllocation?.amount || 0,
+      type
+    );
+
+    setShowWalletModal(false);
   };
 
   const getTotalAllocated = (type) => {
@@ -178,7 +367,7 @@ export default function AddBudget() {
     else if (type === "wants") allocations = wantsAllocations;
     else allocations = savingsAllocations;
 
-    return Object.values(allocations).reduce((sum, val) => sum + val, 0);
+    return Object.values(allocations).reduce((sum, val) => sum + (val.amount || 0), 0);
   };
 
   const getRemainingAmount = (type) => {
@@ -225,6 +414,19 @@ export default function AddBudget() {
       return false;
     }
 
+    // Check if all allocations have wallet assigned
+    const allAllocations = [
+      ...Object.values(needsAllocations),
+      ...Object.values(wantsAllocations),
+      ...Object.values(savingsAllocations)
+    ];
+
+    const missingWallet = allAllocations.some(alloc => !alloc.wallet_id && alloc.amount > 0);
+    if (missingWallet) {
+      Alert.alert("Error", "Please assign a wallet to all allocations");
+      return false;
+    }
+
     return true;
   };
 
@@ -233,31 +435,34 @@ export default function AddBudget() {
 
     const allocations = [];
 
-    Object.entries(needsAllocations).forEach(([categoryId, amount]) => {
-      if (amount > 0) {
+    Object.entries(needsAllocations).forEach(([categoryId, data]) => {
+      if (data.amount > 0) {
         allocations.push({
           category_id: parseInt(categoryId),
-          amount: amount,
+          wallet_id: data.wallet_id,
+          amount: data.amount,
           category_type: "Need",
         });
       }
     });
 
-    Object.entries(wantsAllocations).forEach(([categoryId, amount]) => {
-      if (amount > 0) {
+    Object.entries(wantsAllocations).forEach(([categoryId, data]) => {
+      if (data.amount > 0) {
         allocations.push({
           category_id: parseInt(categoryId),
-          amount: amount,
+          wallet_id: data.wallet_id,
+          amount: data.amount,
           category_type: "Want",
         });
       }
     });
 
-    Object.entries(savingsAllocations).forEach(([categoryId, amount]) => {
-      if (amount > 0) {
+    Object.entries(savingsAllocations).forEach(([categoryId, data]) => {
+      if (data.amount > 0) {
         allocations.push({
           category_id: parseInt(categoryId),
-          amount: amount,
+          wallet_id: data.wallet_id,
+          amount: data.amount,
           category_type: "Savings",
         });
       }
@@ -271,14 +476,13 @@ export default function AddBudget() {
     setLoading(true);
 
     try {
-      const response = await fetch(`${API_BASE_URL}/create-budget`, {
+      const response = await fetch(`${API_BASE_URL}/create-budget-home`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           user_id: numericUserId,
-          wallet_id: numericWalletId,
           budget_name: `${budgetRule} Budget`,
-          total_income: parseFloat(totalIncome),
+          total_income: parseFloat(budgetAmount),
           budget_rule: budgetRule,
           budget_period: budgetPeriod,
           allocations: allocations,
@@ -302,9 +506,27 @@ export default function AddBudget() {
     }
   };
 
-  const renderCategoryAllocation = (categories, allocations, type, budgetAmount) => {
+  const getAvailableCategories = (type) => {
+    let categories, allocations;
+    
+    if (type === "needs") {
+      categories = needsCategories;
+      allocations = needsAllocations;
+    } else if (type === "wants") {
+      categories = wantsCategories;
+      allocations = wantsAllocations;
+    } else {
+      categories = savingsCategories;
+      allocations = savingsAllocations;
+    }
+
+    return categories.filter(cat => !allocations[cat.category_id]);
+  };
+
+  const renderCategoryAllocation = (allocations, type, budgetAmount) => {
     const remaining = getRemainingAmount(type);
     const totalAllocated = getTotalAllocated(type);
+    const allocationEntries = Object.entries(allocations);
 
     return (
       <View style={styles.allocationSection}>
@@ -338,24 +560,69 @@ export default function AddBudget() {
           Remaining: ₱{remaining.toFixed(2)}
         </Text>
 
-        {categories.map((category) => (
-          <View key={category.category_id} style={styles.categoryInput}>
-            <Text style={styles.categoryLabel}>{category.category_name}</Text>
-            <TextInput
-              style={styles.amountInput}
-              placeholder="0.00"
-              keyboardType="decimal-pad"
-              value={
-                allocations[category.category_id]
-                  ? allocations[category.category_id].toString()
-                  : ""
-              }
-              onChangeText={(text) =>
-                handleAllocationChange(category.category_id, text, type)
-              }
-            />
-          </View>
-        ))}
+        {/* Added Categories */}
+        {allocationEntries.map(([categoryId, allocation]) => {
+          const selectedWallet = wallets.find(w => w.wallet_id === allocation.wallet_id);
+          
+          return (
+            <View key={categoryId} style={styles.categoryCard}>
+              <View style={styles.categoryHeader}>
+                <Text style={styles.categoryLabel}>{allocation.category_name}</Text>
+                <TouchableOpacity
+                  onPress={() => handleRemoveCategory(categoryId, type)}
+                  style={styles.removeButton}
+                >
+                  <Text style={styles.removeButtonText}>✕</Text>
+                </TouchableOpacity>
+              </View>
+              
+              <View style={styles.inputRow}>
+                <View style={styles.walletSelectorContainer}>
+                  <Text style={styles.inputLabel}>Wallet</Text>
+                  <TouchableOpacity
+                    style={styles.walletSelector}
+                    onPress={() => handleOpenWalletModal(categoryId, type)}
+                  >
+                    <Text style={styles.walletSelectorText}>
+                      {selectedWallet ? selectedWallet.wallet_name : "Select Wallet"}
+                    </Text>
+                    <Text style={styles.dropdownIcon}>▼</Text>
+                  </TouchableOpacity>
+                </View>
+
+                <View style={styles.amountInputContainer}>
+                  <Text style={styles.inputLabel}>Amount</Text>
+                  <TextInput
+                    style={[
+                      styles.amountInput,
+                      !allocation.wallet_id && styles.amountInputDisabled
+                    ]}
+                    placeholder="0.00"
+                    keyboardType="decimal-pad"
+                    value={allocation.amount ? allocation.amount.toString() : ""}
+                    onChangeText={(text) =>
+                      handleAllocationChange(
+                        categoryId, 
+                        allocation.wallet_id,
+                        text, 
+                        type
+                      )
+                    }
+                    editable={!!allocation.wallet_id}
+                  />
+                </View>
+              </View>
+            </View>
+          );
+        })}
+
+        {/* Add Category Button */}
+        <TouchableOpacity
+          style={styles.addCategoryButton}
+          onPress={() => handleAddCategory(type)}
+        >
+          <Text style={styles.addCategoryButtonText}>+ Add Category</Text>
+        </TouchableOpacity>
       </View>
     );
   };
@@ -374,28 +641,27 @@ export default function AddBudget() {
       <ScrollView showsVerticalScrollIndicator={false}>
         {step === 1 && (
           <View>
-            <Text style={styles.title}>Set Your Budget</Text>
+            <Text style={styles.title}>Create Budget</Text>
             <Text style={styles.subtitle}>
-              Create a budget based on your available balance
+              Budget across all your wallets
             </Text>
 
             <View style={styles.incomeCard}>
-              <Text style={styles.incomeCardTitle}>Wallet Income</Text>
-              <View style={styles.incomeRow}>
-                <Text style={styles.incomeLabel}>Total Income:</Text>
-                <Text style={styles.incomeAmount}>₱{walletIncome.toLocaleString()}</Text>
+              <Text style={styles.incomeCardTitle}>Total Wallet Income</Text>
+              <Text style={styles.incomeAmount}>
+                ₱{totalWalletIncome.toLocaleString()}
+              </Text>
+              
+              <View style={styles.walletsList}>
+                {wallets.map(wallet => (
+                  <View key={wallet.wallet_id} style={styles.walletItem}>
+                    <Text style={styles.walletItemName}>{wallet.wallet_name}</Text>
+                    <Text style={styles.walletItemAmount}>
+                      ₱{wallet.total_income.toLocaleString()}
+                    </Text>
+                  </View>
+                ))}
               </View>
-              <View style={styles.incomeRow}>
-                <Text style={styles.incomeLabel}>Available for Budget:</Text>
-                <Text style={[styles.incomeAmount, styles.availableAmount]}>
-                  ₱{availableBalance.toLocaleString()}
-                </Text>
-              </View>
-              {availableBalance === 0 && (
-                <Text style={styles.warningText}>
-                  No available balance. Add income first.
-                </Text>
-              )}
             </View>
 
             <View style={styles.inputGroup}>
@@ -404,11 +670,11 @@ export default function AddBudget() {
                 style={styles.input}
                 placeholder="Enter budget amount"
                 keyboardType="decimal-pad"
-                value={totalIncome}
-                onChangeText={setTotalIncome}
+                value={budgetAmount}
+                onChangeText={setBudgetAmount}
               />
               <Text style={styles.helperText}>
-                Maximum: ₱{availableBalance.toLocaleString()}
+                Maximum: ₱{totalWalletIncome.toLocaleString()}
               </Text>
             </View>
 
@@ -465,7 +731,7 @@ export default function AddBudget() {
               ))}
             </View>
 
-            {totalIncome && budgetRule !== "Custom" && (
+            {budgetAmount && budgetRule !== "Custom" && (
               <View style={styles.previewCard}>
                 <Text style={styles.previewTitle}>Budget Preview</Text>
                 <View style={styles.previewRow}>
@@ -492,10 +758,10 @@ export default function AddBudget() {
             <TouchableOpacity
               style={[
                 styles.nextButton,
-                (!totalIncome || availableBalance === 0) && styles.nextButtonDisabled
+                (!budgetAmount || totalWalletIncome === 0) && styles.nextButtonDisabled
               ]}
               onPress={handleNext}
-              disabled={!totalIncome || availableBalance === 0}
+              disabled={!budgetAmount || totalWalletIncome === 0}
             >
               <Text style={styles.nextButtonText}>Next: Allocate by Category</Text>
             </TouchableOpacity>
@@ -506,34 +772,37 @@ export default function AddBudget() {
           <View>
             <Text style={styles.title}>Allocate Your Budget</Text>
             <Text style={styles.subtitle}>
-              Distribute your budget across categories
+              Assign categories to specific wallets
             </Text>
 
             <View style={styles.summaryCard}>
               <Text style={styles.summaryTitle}>Total Budget</Text>
-              <Text style={styles.summaryAmount}>₱{totalIncome}</Text>
+              <Text style={styles.summaryAmount}>₱{budgetAmount}</Text>
             </View>
 
-            {renderCategoryAllocation(
-              needsCategories,
-              needsAllocations,
-              "needs",
-              needsAmount
-            )}
+            {/* Wallet Balance Summary - Show once before allocations */}
+            <View style={styles.walletBalanceSummaryGlobal}>
+              <Text style={styles.walletBalanceTitle}>Wallet Balances:</Text>
+              {wallets.map(wallet => {
+                const balance = walletBalances[wallet.wallet_id] || 0;
+                const isLow = balance < wallet.total_income * 0.2;
+                return (
+                  <View key={wallet.wallet_id} style={styles.walletBalanceItem}>
+                    <Text style={styles.walletBalanceName}>{wallet.wallet_name}</Text>
+                    <Text style={[
+                      styles.walletBalanceAmount,
+                      { color: balance < 0 ? "#FF6B6B" : isLow ? "#FF9800" : "#00B14F" }
+                    ]}>
+                      ₱{balance.toFixed(2)} / ₱{wallet.total_income.toLocaleString()}
+                    </Text>
+                  </View>
+                );
+              })}
+            </View>
 
-            {renderCategoryAllocation(
-              wantsCategories,
-              wantsAllocations,
-              "wants",
-              wantsAmount
-            )}
-
-            {renderCategoryAllocation(
-              savingsCategories,
-              savingsAllocations,
-              "savings",
-              savingsAmount
-            )}
+            {renderCategoryAllocation(needsAllocations, "needs", needsAmount)}
+            {renderCategoryAllocation(wantsAllocations, "wants", wantsAmount)}
+            {renderCategoryAllocation(savingsAllocations, "savings", savingsAmount)}
 
             <View style={styles.buttonRow}>
               <TouchableOpacity
@@ -558,6 +827,97 @@ export default function AddBudget() {
           </View>
         )}
       </ScrollView>
+
+      {/* Category Selection Modal */}
+      <Modal
+        visible={showCategoryModal}
+        transparent={true}
+        animationType="slide"
+        onRequestClose={() => setShowCategoryModal(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Select Category</Text>
+              <TouchableOpacity onPress={() => setShowCategoryModal(false)}>
+                <Text style={styles.modalClose}>✕</Text>
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView style={styles.modalList}>
+              {getAvailableCategories(currentAllocationType).map(category => (
+                <TouchableOpacity
+                  key={category.category_id}
+                  style={styles.modalItem}
+                  onPress={() => handleSelectCategory(category)}
+                >
+                  <Text style={styles.modalItemText}>{category.category_name}</Text>
+                </TouchableOpacity>
+              ))}
+              {getAvailableCategories(currentAllocationType).length === 0 && (
+                <Text style={styles.emptyText}>No more categories available</Text>
+              )}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Wallet Selection Modal */}
+      <Modal
+        visible={showWalletModal}
+        transparent={true}
+        animationType="slide"
+        onRequestClose={() => setShowWalletModal(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Select Wallet</Text>
+              <TouchableOpacity onPress={() => setShowWalletModal(false)}>
+                <Text style={styles.modalClose}>✕</Text>
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView style={styles.modalList}>
+              {wallets.map(wallet => {
+                const balance = walletBalances[wallet.wallet_id] || 0;
+                const isLow = balance < wallet.total_income * 0.2;
+                const isNegative = balance < 0;
+
+                return (
+                  <TouchableOpacity
+                    key={wallet.wallet_id}
+                    style={[
+                      styles.walletModalItem,
+                      isNegative && styles.walletModalItemDisabled
+                    ]}
+                    onPress={() => !isNegative && handleSelectWallet(wallet)}
+                    disabled={isNegative}
+                  >
+                    <View style={styles.walletModalInfo}>
+                      <Text style={[
+                        styles.walletModalName,
+                        isNegative && styles.disabledText
+                      ]}>
+                        {wallet.wallet_name}
+                      </Text>
+                      <Text style={[
+                        styles.walletModalBalance,
+                        { color: isNegative ? "#FF6B6B" : isLow ? "#FF9800" : "#00B14F" }
+                      ]}>
+                        Available: ₱{balance.toFixed(2)}
+                      </Text>
+                      <Text style={styles.walletModalTotal}>
+                        Total: ₱{wallet.total_income.toLocaleString()}
+                      </Text>
+                    </View>
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -607,30 +967,32 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: "bold",
     color: "#333",
-    marginBottom: 12,
-  },
-  incomeRow: {
-    flexDirection: "row",
-    justifyContent: "space-between",
     marginBottom: 8,
   },
-  incomeLabel: {
+  incomeAmount: {
+    fontSize: 24,
+    fontWeight: "bold",
+    color: "#00B14F",
+    marginBottom: 12,
+  },
+  walletsList: {
+    borderTopWidth: 1,
+    borderTopColor: "#e0e0e0",
+    paddingTop: 12,
+  },
+  walletItem: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    paddingVertical: 6,
+  },
+  walletItemName: {
     fontSize: 14,
     color: "#666",
   },
-  incomeAmount: {
-    fontSize: 16,
+  walletItemAmount: {
+    fontSize: 14,
     fontWeight: "600",
     color: "#333",
-  },
-  availableAmount: {
-    color: "#00B14F",
-  },
-  warningText: {
-    fontSize: 14,
-    color: "#FF6B6B",
-    marginTop: 8,
-    fontWeight: "600",
   },
   helperText: {
     fontSize: 12,
@@ -811,30 +1173,130 @@ const styles = StyleSheet.create({
     marginBottom: 16,
     textAlign: "right",
   },
-  categoryInput: {
+  categoryCard: {
+    marginBottom: 16,
+    padding: 12,
+    backgroundColor: "#f8f8f8",
+    borderRadius: 8,
+  },
+  categoryHeader: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
     marginBottom: 12,
-    paddingVertical: 8,
-    borderBottomWidth: 1,
-    borderBottomColor: "#f0f0f0",
   },
   categoryLabel: {
     fontSize: 14,
     color: "#333",
+    fontWeight: "600",
     flex: 1,
   },
+  removeButton: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: "#FF6B6B",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  removeButtonText: {
+    color: "#fff",
+    fontSize: 16,
+    fontWeight: "bold",
+  },
+  inputRow: {
+    flexDirection: "row",
+    gap: 12,
+  },
+  amountInputContainer: {
+    flex: 1,
+  },
+  walletSelectorContainer: {
+    flex: 1,
+  },
+  inputLabel: {
+    fontSize: 12,
+    color: "#666",
+    marginBottom: 6,
+    fontWeight: "500",
+  },
   amountInput: {
-    backgroundColor: "#f8f8f8",
+    backgroundColor: "#fff",
     borderRadius: 8,
     paddingHorizontal: 12,
-    paddingVertical: 8,
+    paddingVertical: 10,
     fontSize: 14,
-    width: 120,
-    textAlign: "right",
     borderWidth: 1,
     borderColor: "#e0e0e0",
+  },
+  amountInputDisabled: {
+    backgroundColor: "#f5f5f5",
+    color: "#999",
+  },
+  walletSelector: {
+    backgroundColor: "#fff",
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderWidth: 1,
+    borderColor: "#e0e0e0",
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  walletSelectorText: {
+    fontSize: 14,
+    color: "#333",
+  },
+  dropdownIcon: {
+    fontSize: 10,
+    color: "#666",
+  },
+  walletBalanceSummaryGlobal: {
+    backgroundColor: "#f0f9ff",
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 20,
+    borderWidth: 1,
+    borderColor: "#b3e0ff",
+    shadowColor: "#000",
+    shadowOpacity: 0.05,
+    shadowOffset: { width: 0, height: 2 },
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  walletBalanceTitle: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: "#333",
+    marginBottom: 8,
+  },
+  walletBalanceItem: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    paddingVertical: 4,
+  },
+  walletBalanceName: {
+    fontSize: 12,
+    color: "#666",
+  },
+  walletBalanceAmount: {
+    fontSize: 12,
+    fontWeight: "600",
+  },
+  addCategoryButton: {
+    backgroundColor: "#E8F5E9",
+    borderRadius: 8,
+    paddingVertical: 12,
+    alignItems: "center",
+    borderWidth: 2,
+    borderColor: "#00B14F",
+    borderStyle: "dashed",
+  },
+  addCategoryButtonText: {
+    color: "#00B14F",
+    fontSize: 14,
+    fontWeight: "600",
   },
   buttonRow: {
     flexDirection: "row",
@@ -867,5 +1329,88 @@ const styles = StyleSheet.create({
     color: "#fff",
     fontSize: 16,
     fontWeight: "bold",
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0, 0, 0, 0.5)",
+    justifyContent: "flex-end",
+  },
+  modalContent: {
+    backgroundColor: "#fff",
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    maxHeight: "70%",
+    paddingBottom: 20,
+  },
+  modalHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    padding: 20,
+    borderBottomWidth: 1,
+    borderBottomColor: "#e0e0e0",
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: "bold",
+    color: "#333",
+  },
+  modalClose: {
+    fontSize: 24,
+    color: "#666",
+    fontWeight: "bold",
+  },
+  modalList: {
+    padding: 16,
+  },
+  modalItem: {
+    backgroundColor: "#f8f8f8",
+    borderRadius: 8,
+    padding: 16,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: "#e0e0e0",
+  },
+  modalItemText: {
+    fontSize: 15,
+    color: "#333",
+    fontWeight: "500",
+  },
+  walletModalItem: {
+    backgroundColor: "#f8f8f8",
+    borderRadius: 8,
+    padding: 16,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: "#e0e0e0",
+  },
+  walletModalItemDisabled: {
+    backgroundColor: "#f5f5f5",
+    opacity: 0.5,
+  },
+  walletModalInfo: {
+    gap: 4,
+  },
+  walletModalName: {
+    fontSize: 15,
+    fontWeight: "600",
+    color: "#333",
+  },
+  walletModalBalance: {
+    fontSize: 13,
+    fontWeight: "600",
+  },
+  walletModalTotal: {
+    fontSize: 12,
+    color: "#666",
+  },
+  disabledText: {
+    color: "#999",
+  },
+  emptyText: {
+    textAlign: "center",
+    color: "#999",
+    fontSize: 14,
+    marginTop: 20,
   },
 });

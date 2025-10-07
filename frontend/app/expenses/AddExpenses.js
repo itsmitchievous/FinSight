@@ -11,41 +11,88 @@ import {
 import { useRouter, useLocalSearchParams, useFocusEffect } from "expo-router";
 import { API_BASE_URL } from "../config"; 
 
-
-export default function AddExpense() {
+export default function AddExpenses() {
   const router = useRouter();
-  const { userId, walletId } = useLocalSearchParams();
+  const { userId } = useLocalSearchParams();
   const numericUserId = Number(userId);
-  const numericWalletId = Number(walletId);
 
+  const [wallets, setWallets] = useState([]);
+  const [selectedWallet, setSelectedWallet] = useState(null);
+  const [showWalletDropdown, setShowWalletDropdown] = useState(false);
+  
   const [categories, setCategories] = useState([]);
   const [selectedCategory, setSelectedCategory] = useState(null);
-  const [showDropdown, setShowDropdown] = useState(false);
+  const [showCategoryDropdown, setShowCategoryDropdown] = useState(false);
+  
   const [amount, setAmount] = useState("");
   const [notes, setNotes] = useState("");
-  const [expenseDate, setExpenseDate] = useState(
-    new Date().toISOString().split("T")[0]
-  );
+  const [expenseDate, setExpenseDate] = useState(new Date().toISOString().split("T")[0]);
   const [isLoading, setIsLoading] = useState(false);
 
   const [isRecurring, setIsRecurring] = useState(false);
   const [showFrequencyDropdown, setShowFrequencyDropdown] = useState(false);
   const [recurringFrequency, setRecurringFrequency] = useState(null);
 
-  // Budget tracking state
-  const [categoryBudgets, setCategoryBudgets] = useState({});
+  // Budget tracking - now shows budget for selected wallet + category combination
+  const [categoryBudgetInfo, setCategoryBudgetInfo] = useState(null);
+  const [walletBalance, setWalletBalance] = useState(null);
 
   useEffect(() => {
+    fetchWallets();
     fetchCategories();
-    fetchCategoryBudgets();
   }, []);
 
   useFocusEffect(
     useCallback(() => {
       fetchCategories();
-      fetchCategoryBudgets();
     }, [])
   );
+
+  useEffect(() => {
+    if (selectedWallet) {
+      fetchWalletBalance();
+    }
+  }, [selectedWallet]);
+
+  // Fetch budget info when both wallet and category are selected
+  useEffect(() => {
+    if (selectedWallet && selectedCategory) {
+      fetchCategoryBudgetInfo();
+    } else {
+      setCategoryBudgetInfo(null);
+    }
+  }, [selectedWallet, selectedCategory]);
+
+  const fetchWallets = async () => {
+    try {
+      const response = await fetch(`${API_BASE_URL}/wallets?user_id=${numericUserId}`);
+      const data = await response.json();
+      if (response.ok) {
+        setWallets(data);
+      } else {
+        Alert.alert("Error", "Failed to fetch wallets");
+      }
+    } catch (error) {
+      console.error("Error fetching wallets:", error);
+      Alert.alert("Error", "Network error. Please try again.");
+    }
+  };
+
+  const fetchWalletBalance = async () => {
+    if (!selectedWallet) return;
+    
+    try {
+      const response = await fetch(
+        `${API_BASE_URL}/wallet-details?user_id=${numericUserId}&wallet_id=${selectedWallet.wallet_id}`
+      );
+      const data = await response.json();
+      if (response.ok) {
+        setWalletBalance(data.balance || 0);
+      }
+    } catch (error) {
+      console.error("Error fetching wallet balance:", error);
+    }
+  };
 
   const fetchCategories = async () => {
     try {
@@ -55,142 +102,87 @@ export default function AddExpense() {
       const data = await response.json();
       if (response.ok) {
         setCategories(data);
-      } else {
-        Alert.alert("Error", "Failed to fetch categories");
       }
     } catch (error) {
       console.error("Error fetching categories:", error);
-      Alert.alert("Error", "Network error. Please try again.");
     }
   };
 
-  const fetchCategoryBudgets = async () => {
+  const fetchCategoryBudgetInfo = async () => {
+    if (!selectedWallet || !selectedCategory) return;
+
     try {
-      // Get all budgets for this wallet
-      const budgetsResponse = await fetch(
-        `${API_BASE_URL}/wallet-budgets?user_id=${numericUserId}&wallet_id=${numericWalletId}`
+      const response = await fetch(
+        `${API_BASE_URL}/category-budget-info?user_id=${numericUserId}&category_id=${selectedCategory.category_id}&wallet_id=${selectedWallet.wallet_id}`
       );
-      const budgetsData = await budgetsResponse.json();
+      const data = await response.json();
 
-      if (budgetsResponse.ok && budgetsData.length > 0) {
-        // For each budget, get the detailed allocations
-        const budgetMap = {};
-        
-        for (const budget of budgetsData) {
-          const detailsResponse = await fetch(
-            `${API_BASE_URL}/budget-details?budget_id=${budget.budget_id}`
-          );
-          const detailsData = await detailsResponse.json();
-
-          if (detailsResponse.ok && detailsData.allocations) {
-            detailsData.allocations.forEach(allocation => {
-              const categoryId = allocation.category_id;
-              const allocated = parseFloat(allocation.allocated_amount);
-              const spent = parseFloat(allocation.spent_amount);
-
-              // Store or update budget info for this category
-              if (!budgetMap[categoryId]) {
-                budgetMap[categoryId] = {
-                  allocated: allocated,
-                  spent: spent,
-                  remaining: allocated - spent
-                };
-              } else {
-                // If multiple budgets exist, sum them up
-                budgetMap[categoryId].allocated += allocated;
-                budgetMap[categoryId].spent += spent;
-                budgetMap[categoryId].remaining = budgetMap[categoryId].allocated - budgetMap[categoryId].spent;
-              }
-            });
-          }
-        }
-
-        setCategoryBudgets(budgetMap);
+      if (response.ok && data && !Array.isArray(data)) {
+        // Single object returned for specific wallet
+        setCategoryBudgetInfo(data);
+      } else if (response.ok && Array.isArray(data) && data.length > 0) {
+        // Array returned, shouldn't happen with wallet_id specified but handle it
+        setCategoryBudgetInfo(data[0]);
+      } else {
+        setCategoryBudgetInfo(null);
       }
     } catch (error) {
-      console.error("Error fetching category budgets:", error);
+      console.error("Error fetching category budget info:", error);
+      setCategoryBudgetInfo(null);
     }
+  };
+
+  const handleWalletSelect = (wallet) => {
+    setSelectedWallet(wallet);
+    setShowWalletDropdown(false);
   };
 
   const handleCategorySelect = (category) => {
     setSelectedCategory(category);
-    setShowDropdown(false);
-  };
-
-  const handleAddNewCategory = () => {
-    setShowDropdown(false);
-    router.push(`/categories/AddCategory?userId=${numericUserId}&transactionType=Expense`);
+    setShowCategoryDropdown(false);
   };
 
   const checkBudgetLimit = async () => {
     if (!selectedCategory || !amount || parseFloat(amount) <= 0) {
-      return true; // Allow to proceed to basic validation
+      return true;
     }
 
-    const categoryId = selectedCategory.category_id;
+    if (!categoryBudgetInfo) {
+      return true; // No budget set for this category/wallet combo
+    }
+
     const expenseAmount = parseFloat(amount);
+    const allocated = categoryBudgetInfo.allocated || 0;
+    const spent = categoryBudgetInfo.spent || 0;
+    const newTotal = spent + expenseAmount;
+    const remaining = allocated - newTotal;
 
-    // Check if this category has a budget
-    if (categoryBudgets[categoryId]) {
-      const budget = categoryBudgets[categoryId];
-      const newTotal = budget.spent + expenseAmount;
-      const remaining = budget.allocated - newTotal;
-
-      if (newTotal > budget.allocated) {
-        return new Promise((resolve) => {
-          Alert.alert(
-            "Budget Exceeded",
-            `This expense will exceed your budget for "${selectedCategory.category_name}".\n\n` +
-            `Budget: ₱${budget.allocated.toFixed(2)}\n` +
-            `Already Spent: ₱${budget.spent.toFixed(2)}\n` +
-            `This Expense: ₱${expenseAmount.toFixed(2)}\n` +
-            `New Total: ₱${newTotal.toFixed(2)}\n\n` +
-            `Over Budget By: ₱${Math.abs(remaining).toFixed(2)}\n\n` +
-            `Do you want to continue?`,
-            [
-              {
-                text: "Cancel",
-                style: "cancel",
-                onPress: () => resolve(false),
-              },
-              {
-                text: "Continue Anyway",
-                onPress: () => resolve(true),
-              },
-            ]
-          );
-        });
-      } else if (remaining < budget.allocated * 0.2) {
-        // Warn if spending will leave less than 20% of budget
-        return new Promise((resolve) => {
-          Alert.alert(
-            "Budget Warning",
-            `This expense will use most of your budget for "${selectedCategory.category_name}".\n\n` +
-            `Budget: ₱${budget.allocated.toFixed(2)}\n` +
-            `Already Spent: ₱${budget.spent.toFixed(2)}\n` +
-            `This Expense: ₱${expenseAmount.toFixed(2)}\n` +
-            `Remaining After: ₱${remaining.toFixed(2)}\n\n` +
-            `Continue?`,
-            [
-              {
-                text: "Cancel",
-                style: "cancel",
-                onPress: () => resolve(false),
-              },
-              {
-                text: "Continue",
-                onPress: () => resolve(true),
-              },
-            ]
-          );
-        });
-      }
+    if (newTotal > allocated) {
+      return new Promise((resolve) => {
+        Alert.alert(
+          "Budget Exceeded",
+          `This expense will exceed your budget for "${selectedCategory.category_name}" in ${selectedWallet.wallet_name}.\n\n` +
+          `Budget: ₱${allocated.toFixed(2)}\n` +
+          `Already Spent: ₱${spent.toFixed(2)}\n` +
+          `This Expense: ₱${expenseAmount.toFixed(2)}\n` +
+          `Over Budget By: ₱${Math.abs(remaining).toFixed(2)}\n\n` +
+          `Continue?`,
+          [
+            { text: "Cancel", style: "cancel", onPress: () => resolve(false) },
+            { text: "Continue", onPress: () => resolve(true) },
+          ]
+        );
+      });
     }
 
     return true;
   };
 
   const handleSave = async () => {
+    if (!selectedWallet) {
+      Alert.alert("Error", "Please select a wallet");
+      return;
+    }
     if (!selectedCategory) {
       Alert.alert("Error", "Please select a category");
       return;
@@ -204,52 +196,40 @@ export default function AddExpense() {
       return;
     }
 
-    // Check budget first
-    const budgetCheckPassed = await checkBudgetLimit();
-    if (!budgetCheckPassed) {
+    // Check if wallet has balance
+    if (walletBalance === 0) {
+      Alert.alert(
+        "No Balance",
+        "This wallet has zero balance. Please add income first.",
+        [{ text: "OK" }]
+      );
       return;
     }
 
-    // Check if expense will result in negative balance
-    try {
-      const walletResponse = await fetch(
-        `${API_BASE_URL}/wallet-details?user_id=${numericUserId}&wallet_id=${numericWalletId}`
-      );
-      const walletData = await walletResponse.json();
+    // Check if expense exceeds balance
+    const newBalance = walletBalance - parseFloat(amount);
+    if (newBalance < 0) {
+      const shouldContinue = await new Promise((resolve) => {
+        Alert.alert(
+          "Warning: Negative Balance",
+          `This expense will result in a negative balance of ₱${newBalance.toFixed(2)}.\n\n` +
+          `Current Balance: ₱${walletBalance.toFixed(2)}\n` +
+          `Expense Amount: ₱${parseFloat(amount).toFixed(2)}\n\n` +
+          `Continue?`,
+          [
+            { text: "Cancel", style: "cancel", onPress: () => resolve(false) },
+            { text: "Continue", onPress: () => resolve(true) },
+          ]
+        );
+      });
       
-      if (walletResponse.ok) {
-        const currentBalance = walletData.balance || 0;
-        const newBalance = currentBalance - parseFloat(amount);
-        
-        if (newBalance < 0) {
-          const shouldContinue = await new Promise((resolve) => {
-            Alert.alert(
-              "Warning: Negative Balance",
-              `This expense will result in a negative balance of ₱${newBalance.toFixed(2)}. Do you want to continue?`,
-              [
-                {
-                  text: "Cancel",
-                  style: "cancel",
-                  onPress: () => resolve(false),
-                },
-                {
-                  text: "Continue",
-                  onPress: () => resolve(true),
-                },
-              ]
-            );
-          });
-          
-          if (!shouldContinue) {
-            return;
-          }
-        }
-      }
-    } catch (error) {
-      console.error("Error checking balance:", error);
+      if (!shouldContinue) return;
     }
 
-    // If all checks pass, proceed with saving
+    // Check budget
+    const budgetCheckPassed = await checkBudgetLimit();
+    if (!budgetCheckPassed) return;
+
     await saveExpense();
   };
 
@@ -262,7 +242,7 @@ export default function AddExpense() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           user_id: numericUserId,
-          wallet_id: numericWalletId,
+          wallet_id: selectedWallet.wallet_id,
           category_id: selectedCategory.category_id,
           amount: parseFloat(amount),
           notes: notes.trim(),
@@ -294,28 +274,64 @@ export default function AddExpense() {
         <Text style={styles.title}>ADD EXPENSE</Text>
 
         <View style={styles.formCard}>
+          {/* Wallet Selection */}
+          <Text style={styles.label}>Select Wallet *</Text>
+          <TouchableOpacity
+            style={styles.dropdown}
+            onPress={() => setShowWalletDropdown(!showWalletDropdown)}
+          >
+            <Text style={[styles.dropdownText, !selectedWallet && styles.placeholder]}>
+              {selectedWallet ? selectedWallet.wallet_name : "Select a wallet"}
+            </Text>
+            <Text style={styles.dropdownArrow}>{showWalletDropdown ? "▲" : "▼"}</Text>
+          </TouchableOpacity>
+
+          {showWalletDropdown && (
+            <View style={styles.dropdownList}>
+              <ScrollView nestedScrollEnabled style={{ maxHeight: 150 }}>
+                {wallets.map((wallet) => (
+                  <TouchableOpacity
+                    key={wallet.wallet_id}
+                    style={[
+                      styles.dropdownItem,
+                      selectedWallet?.wallet_id === wallet.wallet_id && styles.selectedItem,
+                    ]}
+                    onPress={() => handleWalletSelect(wallet)}
+                  >
+                    <Text style={styles.walletName}>{wallet.wallet_name}</Text>
+                    <Text style={styles.walletType}>({wallet.wallet_type})</Text>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            </View>
+          )}
+
+          {/* Show wallet balance */}
+          {selectedWallet && walletBalance !== null && (
+            <View style={styles.balanceCard}>
+              <Text style={styles.balanceLabel}>Available Balance:</Text>
+              <Text style={[
+                styles.balanceAmount,
+                walletBalance === 0 && styles.zeroBalance
+              ]}>
+                ₱{walletBalance.toFixed(2)}
+              </Text>
+            </View>
+          )}
+
           {/* Category Dropdown */}
           <Text style={styles.label}>Category *</Text>
           <TouchableOpacity
             style={styles.dropdown}
-            onPress={() => setShowDropdown(!showDropdown)}
+            onPress={() => setShowCategoryDropdown(!showCategoryDropdown)}
           >
-            <Text
-              style={[
-                styles.dropdownText,
-                !selectedCategory && styles.placeholder,
-              ]}
-            >
-              {selectedCategory
-                ? selectedCategory.category_name
-                : "Select a category"}
+            <Text style={[styles.dropdownText, !selectedCategory && styles.placeholder]}>
+              {selectedCategory ? selectedCategory.category_name : "Select a category"}
             </Text>
-            <Text style={styles.dropdownArrow}>
-              {showDropdown ? "▲" : "▼"}
-            </Text>
+            <Text style={styles.dropdownArrow}>{showCategoryDropdown ? "▲" : "▼"}</Text>
           </TouchableOpacity>
 
-          {showDropdown && (
+          {showCategoryDropdown && (
             <View style={styles.dropdownList}>
               <ScrollView nestedScrollEnabled style={{ maxHeight: 200 }}>
                 {categories.map((category) => (
@@ -323,31 +339,24 @@ export default function AddExpense() {
                     key={category.category_id}
                     style={[
                       styles.dropdownItem,
-                      selectedCategory?.category_id === category.category_id &&
-                        styles.selectedItem,
+                      selectedCategory?.category_id === category.category_id && styles.selectedItem,
                     ]}
                     onPress={() => handleCategorySelect(category)}
                   >
                     <View style={styles.categoryInfo}>
-                      <Text style={styles.categoryName}>
-                        {category.category_name}
-                      </Text>
-                      <Text style={styles.categoryType}>
-                        ({category.category_type})
-                      </Text>
+                      <Text style={styles.categoryName}>{category.category_name}</Text>
+                      <Text style={styles.categoryType}>({category.category_type})</Text>
                     </View>
-                    {categoryBudgets[category.category_id] && (
-                      <Text style={styles.budgetIndicator}>
-                        Budget: ₱{categoryBudgets[category.category_id].remaining.toFixed(2)} left
-                      </Text>
-                    )}
                   </TouchableOpacity>
                 ))}
 
                 {/* Add Category Option */}
                 <TouchableOpacity
                   style={[styles.dropdownItem, styles.addCategoryItem]}
-                  onPress={handleAddNewCategory}
+                  onPress={() => {
+                    setShowCategoryDropdown(false);
+                    router.push(`/categories/AddCategory?userId=${numericUserId}&transactionType=Expense`);
+                  }}
                 >
                   <Text style={styles.addCategoryBtnText}>
                     + Add New Category
@@ -357,31 +366,43 @@ export default function AddExpense() {
             </View>
           )}
 
-          {/* Show budget info for selected category */}
-          {selectedCategory && categoryBudgets[selectedCategory.category_id] && (
+          {/* Budget info for selected wallet + category */}
+          {selectedWallet && selectedCategory && categoryBudgetInfo && (
             <View style={styles.budgetInfoCard}>
-              <Text style={styles.budgetInfoTitle}>Category Budget</Text>
+              <Text style={styles.budgetInfoTitle}>
+                Category Budget ({selectedWallet.wallet_name})
+              </Text>
               <View style={styles.budgetInfoRow}>
                 <Text style={styles.budgetInfoLabel}>Allocated:</Text>
                 <Text style={styles.budgetInfoValue}>
-                  ₱{categoryBudgets[selectedCategory.category_id].allocated.toFixed(2)}
+                  ₱{(categoryBudgetInfo.allocated || 0).toFixed(2)}
                 </Text>
               </View>
               <View style={styles.budgetInfoRow}>
                 <Text style={styles.budgetInfoLabel}>Spent:</Text>
                 <Text style={styles.budgetInfoValue}>
-                  ₱{categoryBudgets[selectedCategory.category_id].spent.toFixed(2)}
+                  ₱{(categoryBudgetInfo.spent || 0).toFixed(2)}
                 </Text>
               </View>
               <View style={styles.budgetInfoRow}>
                 <Text style={styles.budgetInfoLabel}>Remaining:</Text>
                 <Text style={[
                   styles.budgetInfoValue,
-                  styles.budgetInfoRemaining
+                  styles.budgetInfoRemaining,
+                  (categoryBudgetInfo.remaining || 0) < 0 && styles.budgetOverLimit
                 ]}>
-                  ₱{categoryBudgets[selectedCategory.category_id].remaining.toFixed(2)}
+                  ₱{(categoryBudgetInfo.remaining || 0).toFixed(2)}
                 </Text>
               </View>
+            </View>
+          )}
+
+          {/* Show message if no budget set for this combo */}
+          {selectedWallet && selectedCategory && !categoryBudgetInfo && (
+            <View style={styles.noBudgetCard}>
+              <Text style={styles.noBudgetText}>
+                No budget set for "{selectedCategory.category_name}" in {selectedWallet.wallet_name}
+              </Text>
             </View>
           )}
 
@@ -437,21 +458,12 @@ export default function AddExpense() {
               <Text style={styles.label}>Recurring Frequency *</Text>
               <TouchableOpacity
                 style={styles.dropdown}
-                onPress={() =>
-                  setShowFrequencyDropdown(!showFrequencyDropdown)
-                }
+                onPress={() => setShowFrequencyDropdown(!showFrequencyDropdown)}
               >
-                <Text
-                  style={[
-                    styles.dropdownText,
-                    !recurringFrequency && styles.placeholder,
-                  ]}
-                >
+                <Text style={[styles.dropdownText, !recurringFrequency && styles.placeholder]}>
                   {recurringFrequency || "Select frequency"}
                 </Text>
-                <Text style={styles.dropdownArrow}>
-                  {showFrequencyDropdown ? "▲" : "▼"}
-                </Text>
+                <Text style={styles.dropdownArrow}>{showFrequencyDropdown ? "▲" : "▼"}</Text>
               </TouchableOpacity>
 
               {showFrequencyDropdown && (
@@ -533,8 +545,6 @@ const styles = StyleSheet.create({
     marginBottom: 20,
     fontSize: 16,
   },
-
-  // Dropdown
   dropdown: {
     borderWidth: 1,
     borderColor: "#ddd",
@@ -566,6 +576,8 @@ const styles = StyleSheet.create({
     borderBottomColor: "#f0f0f0",
   },
   selectedItem: { backgroundColor: "#fff5f5" },
+  walletName: { fontSize: 16, color: "#333", fontWeight: "600" },
+  walletType: { fontSize: 12, color: "#666", marginTop: 2 },
   categoryInfo: {
     flexDirection: "row",
     alignItems: "center",
@@ -573,16 +585,28 @@ const styles = StyleSheet.create({
   },
   categoryName: { fontSize: 16, color: "#333", flex: 1 },
   categoryType: { fontSize: 12, color: "#666", marginLeft: 8 },
-  budgetIndicator: {
-    fontSize: 12,
-    color: "#00B14F",
-    marginTop: 4,
+  balanceCard: {
+    backgroundColor: "#f0f9ff",
+    borderRadius: 8,
+    padding: 12,
+    marginBottom: 15,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  balanceLabel: {
+    fontSize: 14,
+    color: "#666",
     fontWeight: "600",
   },
-  addCategoryItem: { backgroundColor: "#f9f9f9" },
-  addCategoryBtnText: { fontSize: 16, color: "#E63946", fontWeight: "600" },
-
-  // Budget Info Card
+  balanceAmount: {
+    fontSize: 18,
+    fontWeight: "bold",
+    color: "#00B14F",
+  },
+  zeroBalance: {
+    color: "#E63946",
+  },
   budgetInfoCard: {
     backgroundColor: "#f0f9ff",
     borderRadius: 8,
@@ -614,7 +638,24 @@ const styles = StyleSheet.create({
   budgetInfoRemaining: {
     color: "#00B14F",
   },
-
+  budgetOverLimit: {
+    color: "#E63946",
+  },
+  noBudgetCard: {
+    backgroundColor: "#fff9e6",
+    borderRadius: 8,
+    padding: 12,
+    marginBottom: 15,
+    borderLeftWidth: 4,
+    borderLeftColor: "#ffc107",
+  },
+  noBudgetText: {
+    fontSize: 13,
+    color: "#666",
+    fontStyle: "italic",
+  },
+  addCategoryItem: { backgroundColor: "#f9f9f9" },
+  addCategoryBtnText: { fontSize: 16, color: "#E63946", fontWeight: "600" },
   notesInput: {
     borderWidth: 1,
     borderColor: "#ccc",
@@ -623,8 +664,6 @@ const styles = StyleSheet.create({
     height: 80,
     textAlignVertical: "top",
   },
-
-  // Recurring
   toggleContainer: {
     flexDirection: "row",
     marginBottom: 20,
@@ -641,8 +680,6 @@ const styles = StyleSheet.create({
   },
   toggleActive: { backgroundColor: "#e6f7ff", borderColor: "#007bff" },
   toggleText: { fontSize: 16, fontWeight: "600" },
-
-  // Buttons
   saveButton: {
     backgroundColor: "#E63946",
     paddingVertical: 16,

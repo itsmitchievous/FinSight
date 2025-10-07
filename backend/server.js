@@ -48,28 +48,36 @@ app.post("/signup", async (req, res) => {
   }
 
   try {
+    // 1. Hash password
     const hashedPassword = await bcrypt.hash(password, 10);
+
+    // 2. Insert user into DB
     const sql = "INSERT INTO users (full_name, email_add, password_hash) VALUES (?, ?, ?)";
-    db.query(sql, [full_name, email_add, hashedPassword], (err, result) => {
+    db.query(sql, [full_name, email_add, hashedPassword], async (err, result) => {
       if (err) {
         console.error("❌ DB Error inserting user:", err.sqlMessage);
         return res.status(500).json({ message: "Failed to register user", error: err.sqlMessage });
       }
 
       const userId = result.insertId;
-      const otpCode = generateOTP();
-      const expiresAt = new Date(Date.now() + 10 * 60000);
 
+      // 3. Generate OTP *after* user is created
+      const otpCode = Math.floor(100000 + Math.random() * 900000).toString(); // plain 6-digit code
+      const hashedOtp = await bcrypt.hash(otpCode, 10); // hashed for DB
+      const expiresAt = new Date(Date.now() + 10 * 60000); // 10 minutes
+
+      // 4. Save hashed OTP
       const otpSql = `
-        INSERT INTO otps (user_id, otp_code, type, expires_at)
-        VALUES (?, ?, 'signup', ?)
+        INSERT INTO otps (user_id, otp_code, type, expires_at, used)
+        VALUES (?, ?, 'signup', ?, FALSE)
       `;
-      db.query(otpSql, [userId, otpCode, expiresAt], (err2) => {
+      db.query(otpSql, [userId, hashedOtp, expiresAt], (err2) => {
         if (err2) {
           console.error("❌ OTP DB Error:", err2);
           return res.status(500).json({ message: "Failed to generate OTP" });
         }
 
+        // 5. Send OTP email (use the plain otpCode here)
         transporter.sendMail({
           from: '"FinSight App" <finsightapplication.email@gmail.com>',
           to: email_add,
@@ -82,7 +90,13 @@ app.post("/signup", async (req, res) => {
           }
 
           console.log("✅ Signup OTP sent to", email_add);
-          res.json({ message: "User registered! OTP sent.", userId });
+
+          // ✅ include flow = "signup"
+          res.json({
+            message: "User registered! OTP sent.",
+            userId,
+            flow: "signup"
+          });
         });
       });
     });
@@ -92,60 +106,253 @@ app.post("/signup", async (req, res) => {
   }
 });
 
+
+
 // ===================== VERIFY OTP =====================
 app.post("/verify-otp", (req, res) => {
-  let { user_id, otp_code } = req.body;
+  let { user_id, otp_code, flow } = req.body;
 
   user_id = Number(user_id);
-  if (!user_id || !otp_code) {
+  if (!user_id || !otp_code || !flow) {
     return res.status(400).json({ message: "Missing fields" });
   }
 
-  console.log("Verifying OTP for user_id:", user_id, "otp_code:", otp_code);
+  console.log("Verifying OTP:", { user_id, otp_code, flow });
 
   const selectOtpSql = `
     SELECT * FROM otps
-    WHERE user_id = ? AND otp_code = ? AND type='signup' AND used=FALSE AND expires_at > NOW()
+    WHERE user_id = ? AND type=? AND used=FALSE AND expires_at > NOW()
+    ORDER BY created_at DESC LIMIT 1
   `;
 
-  db.query(selectOtpSql, [user_id, otp_code], (err, results) => {
+  db.query(selectOtpSql, [user_id, flow], async (err, results) => {
     if (err) {
       console.error("DB error selecting OTP:", err);
       return res.status(500).json({ message: "DB error" });
     }
 
     if (results.length === 0) {
-      console.warn("Invalid or expired OTP for user_id:", user_id);
+      console.warn("No valid OTP found for user_id:", user_id, "flow:", flow);
       return res.status(400).json({ message: "Invalid or expired OTP" });
     }
 
-    const otpId = results[0].otp_id;
+    const otpRecord = results[0];
 
+    // ✅ Compare the plain OTP with the hashed one
+    const isMatch = await bcrypt.compare(otp_code, otpRecord.otp_code);
+    if (!isMatch) {
+      console.warn("OTP does not match for user_id:", user_id);
+      return res.status(400).json({ message: "Invalid or expired OTP" });
+    }
+
+    // ✅ Mark OTP as used
     const markOtpUsedSql = "UPDATE otps SET used=TRUE WHERE otp_id=?";
-    db.query(markOtpUsedSql, [otpId], (err2) => {
+    db.query(markOtpUsedSql, [otpRecord.otp_id], (err2) => {
       if (err2) {
         console.error("DB error marking OTP as used:", err2);
         return res.status(500).json({ message: "Failed to mark OTP as used" });
       }
 
-      const verifyUserSql = "UPDATE users SET verified=TRUE WHERE user_id=?";
-      db.query(verifyUserSql, [user_id], (err3, result3) => {
-        if (err3) {
-          console.error("DB error verifying user:", err3);
-          return res.status(500).json({ message: "Failed to verify user" });
-        }
+      if (flow === "signup") {
+        // mark user as verified
+        const verifyUserSql = "UPDATE users SET verified=TRUE WHERE user_id=?";
+        db.query(verifyUserSql, [user_id], (err3, result3) => {
+          if (err3) {
+            console.error("DB error verifying user:", err3);
+            return res.status(500).json({ message: "Failed to verify user" });
+          }
 
-        if (result3.affectedRows === 0) {
-          console.warn("No user found with user_id:", user_id);
-          return res.status(404).json({ message: "User not found" });
-        }
+          if (result3.affectedRows === 0) {
+            return res.status(404).json({ message: "User not found" });
+          }
 
-        console.log("✅ User verified successfully:", user_id);
-        return res.json({ message: "✅ Email verified successfully!", userId: user_id });
-      });
+          console.log("✅ User verified successfully:", user_id);
+          return res.json({ message: "✅ Email verified successfully!", userId: user_id });
+        });
+      } else if (flow === "reset") {
+        // don’t mark verified, just allow password reset
+        console.log("✅ OTP verified for password reset:", user_id);
+        return res.json({ message: "✅ OTP verified, you can now reset your password.", userId: user_id });
+      }
     });
   });
 });
+
+// ===================== RESEND OTP =====================
+app.post("/resend-otp", async (req, res) => {
+  const { user_id } = req.body;
+
+  if (!user_id) {
+    return res.status(400).json({ message: "Missing user_id" });
+  }
+
+  // Get user email
+  const userSql = "SELECT email_add FROM users WHERE user_id = ?";
+  db.query(userSql, [user_id], async (err, results) => {
+    if (err) {
+      console.error("❌ DB error fetching user:", err);
+      return res.status(500).json({ message: "Server error" });
+    }
+    if (results.length === 0) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    const email = results[0].email_add;
+    const otpCode = generateOTP();
+    const expiresAt = new Date(Date.now() + 10 * 60000); // 10 min
+    const hashedOtp = await bcrypt.hash(otpCode, 10); // ✅ hash the OTP
+
+    // Insert new OTP
+    const insertOtpSql = `
+      INSERT INTO otps (user_id, otp_code, type, expires_at)
+      VALUES (?, ?, 'signup', ?)
+    `;
+    db.query(insertOtpSql, [user_id, hashedOtp, expiresAt], (err2) => {
+      if (err2) {
+        console.error("❌ OTP DB Error:", err2);
+        return res.status(500).json({ message: "Failed to save OTP" });
+      }
+
+      // Send OTP via email
+      transporter.sendMail(
+        {
+          from: '"FinSight App" <finsightapplication.email@gmail.com>',
+          to: email,
+          subject: "Resend OTP - FinSight App",
+          text: `Your new OTP code is: ${otpCode}`, // ✅ send plain code to user
+        },
+        (emailErr) => {
+          if (emailErr) {
+            console.error("❌ Email error:", emailErr);
+            return res.status(500).json({ message: "Failed to send OTP email" });
+          }
+
+          console.log("✅ Resent OTP to", email);
+          res.json({ message: "OTP resent successfully" });
+        }
+      );
+    });
+  });
+});
+
+
+// ===================== FORGOT PASSWORD =====================
+app.post("/forgot-password", async (req, res) => {
+  const { email_add } = req.body;
+  if (!email_add) return res.status(400).json({ message: "Email is required" });
+
+  try {
+    // 1. Check if user exists
+    const [user] = await db.promise().query(
+      "SELECT user_id FROM users WHERE email_add = ?",
+      [email_add]
+    );
+
+    if (!user.length) return res.status(404).json({ message: "Email not found" });
+
+    const userId = user[0].user_id;
+
+    // 2. Generate 6-digit OTP
+    const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
+
+    // 3. Hash the OTP before saving
+    const hashedOtp = await bcrypt.hash(otpCode, 10);
+
+    // 4. Insert hashed OTP into database with type='reset'
+    await db.promise().query(
+      "INSERT INTO otps (user_id, otp_code, type, expires_at) VALUES (?, ?, 'reset', DATE_ADD(NOW(), INTERVAL 10 MINUTE))",
+      [userId, hashedOtp]
+    );
+
+    console.log(`📩 OTP for ${email_add}: ${otpCode}`); // plain OTP only for debugging
+
+    // 5. Send OTP via email
+    const transporter = nodemailer.createTransport({
+      service: "gmail",
+      auth: {
+        user: "finsightapplication.email@gmail.com",
+        pass: "lzvj amvn udmf pnco", // ⚠️ app password
+      },
+    });
+
+    await transporter.sendMail({
+      from: '"FinSight App" <finsightapplication.email@gmail.com>',
+      to: email_add,
+      subject: "FORGOT PASSWORD - Your OTP Code",
+      text: `Your OTP code is: ${otpCode}. It will expire in 10 minutes.`,
+    });
+
+    // ✅ include flow = "reset" so frontend knows what to do
+    res.json({ message: "OTP sent to your email", userId, flow: "reset" });
+  } catch (err) {
+    console.error("❌ Forgot password error:", err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+
+
+// ===================== FORGOT PASSWORD RESET =====================
+app.post("/forgot-password-reset", async (req, res) => {
+  const { user_id, new_password } = req.body;
+
+  if (!user_id || !new_password) {
+    return res.status(400).json({ message: "Missing user_id or new_password" });
+  }
+
+  try {
+    // 1. Get current password hash from DB
+    const getUserSql = "SELECT password_hash FROM users WHERE user_id = ?";
+    db.query(getUserSql, [user_id], async (err, results) => {
+      if (err) {
+        console.error("❌ DB error fetching user:", err);
+        return res.status(500).json({ message: "DB error fetching user" });
+      }
+
+      if (results.length === 0) {
+        return res.status(404).json({ message: "User not found" });
+      }
+
+      const currentHash = results[0].password_hash;
+
+      // 2. Check if new password matches old password
+      const isSame = await bcrypt.compare(new_password, currentHash);
+      if (isSame) {
+        return res.status(400).json({ message: "You cannot use your current password." });
+      }
+
+      // 3. Hash the new password
+      const hashedPassword = await bcrypt.hash(new_password, 10);
+
+      // 4. Update password in DB
+      const updateSql = "UPDATE users SET password_hash = ? WHERE user_id = ?";
+      db.query(updateSql, [hashedPassword, user_id], (updateErr, result) => {
+        if (updateErr) {
+          console.error("❌ DB error updating password:", updateErr);
+          return res.status(500).json({ message: "DB error updating password" });
+        }
+
+        if (result.affectedRows === 0) {
+          return res.status(404).json({ message: "User not found" });
+        }
+
+        // 5. Clean up OTPs
+        const deleteOtpSql = "DELETE FROM otps WHERE user_id = ?";
+        db.query(deleteOtpSql, [user_id], (otpErr) => {
+          if (otpErr) console.error("❌ DB error deleting OTPs:", otpErr);
+        });
+
+        console.log(`✅ Password reset successful for user_id ${user_id}`);
+        return res.json({ message: "Password has been reset successfully" });
+      });
+    });
+  } catch (err) {
+    console.error("❌ Error resetting password:", err);
+    return res.status(500).json({ message: "Error resetting password" });
+  }
+});
+
+
 
 // ===================== LOGIN =====================
 app.post("/login", (req, res) => {
@@ -257,6 +464,7 @@ app.get("/home/summary", (req, res) => {
     res.json(results[0]);
   });
 });
+
 
 // II. WALLETS MANAGEMENT 
 
@@ -453,7 +661,7 @@ app.get("/wallet-details", (req, res) => {
         res.json({
             ...wallet,
             balance: balance,
-            remaining_budget: Math.max(0, remainingBudget) // Don't show negative budget
+            remaining_budget: Math.max(0, remainingBudget)
         });
     });
 });
@@ -1225,7 +1433,47 @@ app.delete("/delete-category", (req, res) => {
 
 // VII. BUDGET MANAGEMENT 
 
-// Get budget rules
+// ===================== GET TOTAL INCOME FROM ALL WALLETS =====================
+app.get("/total-income-all-wallets", (req, res) => {
+  const { user_id } = req.query;
+
+  if (!user_id) {
+    return res.status(400).json({ message: "User ID required" });
+  }
+
+  const sql = `
+    SELECT 
+      w.wallet_id,
+      w.wallet_name,
+      w.wallet_type,
+      COALESCE(SUM(i.amount), 0) as total_income
+    FROM wallets w
+    LEFT JOIN income i ON w.wallet_id = i.wallet_id
+    WHERE w.user_id = ?
+    GROUP BY w.wallet_id, w.wallet_name, w.wallet_type
+  `;
+
+  db.query(sql, [user_id], (err, results) => {
+    if (err) {
+      console.error("❌ DB Error fetching total income:", err);
+      return res.status(500).json({ message: "Error fetching income data" });
+    }
+
+    const totalIncome = results.reduce((sum, wallet) => sum + parseFloat(wallet.total_income), 0);
+    
+    res.json({
+      total_income: totalIncome,
+      wallets: results.map(w => ({
+        wallet_id: w.wallet_id,
+        wallet_name: w.wallet_name,
+        wallet_type: w.wallet_type,
+        total_income: parseFloat(w.total_income)
+      }))
+    });
+  });
+});
+
+// ===================== GET BUDGET RULES =====================
 app.get("/budget-rules", (req, res) => {
   const rules = {
     "50-30-20": { needs: 50, wants: 30, savings: 20 },
@@ -1234,7 +1482,7 @@ app.get("/budget-rules", (req, res) => {
   res.json(rules);
 });
 
-// Get categories by type
+// ===================== GET CATEGORIES BY TYPE =====================
 app.get("/categories-by-type", (req, res) => {
   const { user_id, category_type } = req.query;
 
@@ -1265,12 +1513,10 @@ app.get("/categories-by-type", (req, res) => {
   });
 });
 
-// ===================== ADD BUDGET =====================
-
-app.post("/create-budget", (req, res) => {
+// ===================== CREATE MULTI-WALLET BUDGET FROM HOMEPAGE =====================
+app.post("/create-budget-home", (req, res) => {
   const { 
     user_id, 
-    wallet_id, 
     budget_name,
     total_income, 
     budget_rule, 
@@ -1278,7 +1524,7 @@ app.post("/create-budget", (req, res) => {
     allocations 
   } = req.body;
 
-  if (!user_id || !wallet_id || !total_income || !budget_rule || !allocations) {
+  if (!user_id || !total_income || !budget_rule || !allocations) {
     return res.status(400).json({ message: "Missing required fields" });
   }
 
@@ -1288,6 +1534,12 @@ app.post("/create-budget", (req, res) => {
 
   if (!Array.isArray(allocations) || allocations.length === 0) {
     return res.status(400).json({ message: "Invalid allocations format" });
+  }
+
+  // Validate all allocations have wallet_id
+  const invalidAllocations = allocations.filter(a => !a.wallet_id);
+  if (invalidAllocations.length > 0) {
+    return res.status(400).json({ message: "All allocations must have a wallet assigned" });
   }
 
   const totalAllocated = allocations.reduce((sum, alloc) => sum + parseFloat(alloc.amount), 0);
@@ -1304,14 +1556,15 @@ app.post("/create-budget", (req, res) => {
       return res.status(500).json({ message: "Database error" });
     }
 
+    // Create budget without wallet_id (null since it spans multiple wallets)
     const insertBudgetSql = `
       INSERT INTO budgets (user_id, wallet_id, budget_name, total_income, budget_rule, budget_period)
-      VALUES (?, ?, ?, ?, ?, ?)
+      VALUES (?, NULL, ?, ?, ?, ?)
     `;
 
     db.query(
       insertBudgetSql,
-      [user_id, wallet_id, budget_name || `${budget_rule} Budget`, total_income, budget_rule, budget_period || 'Monthly'],
+      [user_id, budget_name || `${budget_rule} Budget`, total_income, budget_rule, budget_period || 'Monthly'],
       (err2, budgetResult) => {
         if (err2) {
           return db.rollback(() => {
@@ -1321,9 +1574,11 @@ app.post("/create-budget", (req, res) => {
         }
 
         const budgetId = budgetResult.insertId;
+        
+        // Insert allocations with wallet_id
         const insertAllocationSql = `
-          INSERT INTO budget_allocations (budget_id, category_id, allocated_amount, category_type)
-          VALUES (?, ?, ?, ?)
+          INSERT INTO budget_allocations (budget_id, category_id, allocated_amount, category_type, wallet_id)
+          VALUES (?, ?, ?, ?, ?)
         `;
 
         let completedAllocations = 0;
@@ -1332,7 +1587,13 @@ app.post("/create-budget", (req, res) => {
         allocations.forEach((allocation) => {
           db.query(
             insertAllocationSql,
-            [budgetId, allocation.category_id, allocation.amount, allocation.category_type],
+            [
+              budgetId, 
+              allocation.category_id, 
+              allocation.amount, 
+              allocation.category_type,
+              allocation.wallet_id
+            ],
             (err3) => {
               if (err3 && !allocationError) {
                 allocationError = true;
@@ -1367,7 +1628,108 @@ app.post("/create-budget", (req, res) => {
   });
 });
 
-// ===================== GET WALLET BUDGETS =====================
+// ===================== GET CATEGORY BUDGET INFO FOR EXPENSE =====================
+app.get("/category-budget-info", (req, res) => {
+  const { user_id, category_id, wallet_id } = req.query;
+
+  if (!user_id || !category_id) {
+    return res.status(400).json({ message: "User ID and Category ID required" });
+  }
+
+  let sql = `
+    SELECT 
+      ba.allocation_id,
+      ba.allocated_amount,
+      ba.category_id,
+      ba.wallet_id,
+      c.category_name,
+      COALESCE(SUM(e.amount_spent), 0) as spent_amount,
+      w.wallet_name
+    FROM budget_allocations ba
+    INNER JOIN budgets b ON ba.budget_id = b.budget_id
+    LEFT JOIN categories c ON ba.category_id = c.category_id
+    LEFT JOIN expenses e ON ba.category_id = e.category_id 
+      AND e.wallet_id = ba.wallet_id
+    LEFT JOIN wallets w ON ba.wallet_id = w.wallet_id
+    WHERE b.user_id = ? AND ba.category_id = ?
+  `;
+
+  const params = [user_id, category_id];
+
+  // If wallet_id is provided, filter by it
+  if (wallet_id) {
+    sql += ` AND ba.wallet_id = ?`;
+    params.push(wallet_id);
+  }
+
+  sql += `
+    GROUP BY ba.allocation_id, ba.allocated_amount, ba.category_id, 
+             ba.wallet_id, c.category_name, w.wallet_name
+  `;
+
+  db.query(sql, params, (err, results) => {
+    if (err) {
+      console.error("❌ DB Error fetching category budget:", err);
+      return res.status(500).json({ message: "Error fetching budget info" });
+    }
+
+    // Calculate remaining for each allocation
+    const budgetInfo = results.map(r => ({
+      allocation_id: r.allocation_id,
+      wallet_id: r.wallet_id,
+      wallet_name: r.wallet_name,
+      category_name: r.category_name,
+      allocated: parseFloat(r.allocated_amount),
+      spent: parseFloat(r.spent_amount),
+      remaining: parseFloat(r.allocated_amount) - parseFloat(r.spent_amount)
+    }));
+
+    // If specific wallet requested, return single object
+    if (wallet_id && budgetInfo.length > 0) {
+      return res.json(budgetInfo[0]);
+    }
+
+    // Return all wallet allocations for this category
+    res.json(budgetInfo);
+  });
+});
+
+// ===================== GET ALL USER BUDGETS (HOMEPAGE VIEW) =====================
+app.get("/user-budgets", (req, res) => {
+  const { user_id } = req.query;
+
+  if (!user_id) {
+    return res.status(400).json({ message: "User ID required" });
+  }
+
+  const sql = `
+    SELECT 
+      b.budget_id,
+      b.budget_name,
+      b.total_income,
+      b.budget_rule,
+      b.budget_period,
+      b.budget_created,
+      COUNT(DISTINCT ba.allocation_id) as allocation_count,
+      COUNT(DISTINCT ba.wallet_id) as wallet_count,
+      SUM(ba.allocated_amount) as total_allocated
+    FROM budgets b
+    LEFT JOIN budget_allocations ba ON b.budget_id = ba.budget_id
+    WHERE b.user_id = ?
+    GROUP BY b.budget_id
+    ORDER BY b.budget_created DESC
+  `;
+
+  db.query(sql, [user_id], (err, results) => {
+    if (err) {
+      console.error("❌ DB Error fetching user budgets:", err);
+      return res.status(500).json({ message: "Error fetching budgets" });
+    }
+    res.json(results);
+  });
+});
+
+// ===================== GET WALLET BUDGETS (OLD - KEEP FOR COMPATIBILITY) =====================
 app.get("/wallet-budgets", (req, res) => {
   const { user_id, wallet_id } = req.query;
 
@@ -1387,12 +1749,12 @@ app.get("/wallet-budgets", (req, res) => {
       SUM(ba.allocated_amount) as total_allocated
     FROM budgets b
     LEFT JOIN budget_allocations ba ON b.budget_id = ba.budget_id
-    WHERE b.user_id = ? AND b.wallet_id = ?
+    WHERE b.user_id = ? AND (b.wallet_id = ? OR ba.wallet_id = ?)
     GROUP BY b.budget_id
     ORDER BY b.budget_created DESC
   `;
 
-  db.query(sql, [user_id, wallet_id], (err, results) => {
+  db.query(sql, [user_id, wallet_id, wallet_id], (err, results) => {
     if (err) {
       console.error("❌ DB Error fetching budgets:", err);
       return res.status(500).json({ message: "Error fetching budgets" });
@@ -1401,8 +1763,91 @@ app.get("/wallet-budgets", (req, res) => {
   });
 });
 
-// ===================== GET BUDGET DETAILS WITH ALLOCATION =====================
+// ===================== GET BUDGET DETAILS WITH WALLET BREAKDOWN =====================
+app.get("/budget-details-home", (req, res) => {
+  const { budget_id } = req.query;
 
+  if (!budget_id) {
+    return res.status(400).json({ message: "Budget ID required" });
+  }
+
+  const budgetSql = `
+    SELECT budget_id, user_id, budget_name, total_income, 
+           budget_rule, budget_period, budget_created
+    FROM budgets
+    WHERE budget_id = ?
+  `;
+
+  const allocationsSql = `
+    SELECT 
+      ba.allocation_id,
+      ba.category_id,
+      ba.allocated_amount,
+      ba.category_type,
+      ba.wallet_id,
+      c.category_name,
+      w.wallet_name,
+      COALESCE(SUM(e.amount_spent), 0) as spent_amount
+    FROM budget_allocations ba
+    LEFT JOIN categories c ON ba.category_id = c.category_id
+    LEFT JOIN wallets w ON ba.wallet_id = w.wallet_id
+    LEFT JOIN expenses e ON ba.category_id = e.category_id 
+      AND e.wallet_id = ba.wallet_id
+    WHERE ba.budget_id = ?
+    GROUP BY ba.allocation_id, ba.category_id, ba.allocated_amount, 
+             ba.category_type, ba.wallet_id, c.category_name, w.wallet_name
+    ORDER BY ba.category_type, c.category_name
+  `;
+
+  db.query(budgetSql, [budget_id], (err, budgetResults) => {
+    if (err) {
+      console.error("❌ DB Error fetching budget:", err);
+      return res.status(500).json({ message: "Error fetching budget" });
+    }
+
+    if (budgetResults.length === 0) {
+      return res.status(404).json({ message: "Budget not found" });
+    }
+
+    const budget = budgetResults[0];
+
+    db.query(allocationsSql, [budget_id], (err2, allocationResults) => {
+      if (err2) {
+        console.error("❌ DB Error fetching allocations:", err2);
+        return res.status(500).json({ message: "Error fetching allocations" });
+      }
+
+      // Group by wallet for better visualization
+      const byWallet = {};
+      allocationResults.forEach(alloc => {
+        if (!byWallet[alloc.wallet_id]) {
+          byWallet[alloc.wallet_id] = {
+            wallet_id: alloc.wallet_id,
+            wallet_name: alloc.wallet_name,
+            allocations: []
+          };
+        }
+        byWallet[alloc.wallet_id].allocations.push({
+          allocation_id: alloc.allocation_id,
+          category_id: alloc.category_id,
+          category_name: alloc.category_name,
+          category_type: alloc.category_type,
+          allocated_amount: parseFloat(alloc.allocated_amount),
+          spent_amount: parseFloat(alloc.spent_amount),
+          remaining: parseFloat(alloc.allocated_amount) - parseFloat(alloc.spent_amount)
+        });
+      });
+
+      res.json({
+        ...budget,
+        allocations: allocationResults,
+        by_wallet: Object.values(byWallet)
+      });
+    });
+  });
+});
+
+// ===================== GET BUDGET DETAILS (OLD - KEEP FOR COMPATIBILITY) =====================
 app.get("/budget-details", (req, res) => {
   const { budget_id } = req.query;
 
@@ -1460,92 +1905,7 @@ app.get("/budget-details", (req, res) => {
   });
 });
 
-// ===================== UPDATE BUDGET ALLOCATION =====================
-app.put("/update-budget-allocation", (req, res) => {
-  const { allocation_id, allocated_amount } = req.body;
-
-  if (!allocation_id || !allocated_amount) {
-    return res.status(400).json({ message: "Missing required fields" });
-  }
-
-  if (parseFloat(allocated_amount) <= 0) {
-    return res.status(400).json({ message: "Amount must be greater than 0" });
-  }
-
-  // First, get the budget_id and current allocation
-  const getAllocationSql = `
-    SELECT ba.budget_id, ba.allocated_amount, ba.category_type
-    FROM budget_allocations ba
-    WHERE ba.allocation_id = ?
-  `;
-
-  db.query(getAllocationSql, [allocation_id], (err, allocationResults) => {
-    if (err) {
-      console.error("❌ DB Error fetching allocation:", err);
-      return res.status(500).json({ message: "Database error" });
-    }
-
-    if (allocationResults.length === 0) {
-      return res.status(404).json({ message: "Allocation not found" });
-    }
-
-    const { budget_id, allocated_amount: oldAmount } = allocationResults[0];
-
-    // Check if the new total allocations will exceed total income
-    const checkTotalSql = `
-      SELECT b.total_income,
-             SUM(ba.allocated_amount) as current_total
-      FROM budgets b
-      LEFT JOIN budget_allocations ba ON b.budget_id = ba.budget_id
-      WHERE b.budget_id = ?
-      GROUP BY b.budget_id
-    `;
-
-    db.query(checkTotalSql, [budget_id], (err2, totalResults) => {
-      if (err2) {
-        console.error("❌ DB Error checking totals:", err2);
-        return res.status(500).json({ message: "Database error" });
-      }
-
-      const { total_income, current_total } = totalResults[0];
-      const amountDifference = parseFloat(allocated_amount) - parseFloat(oldAmount);
-      const newTotal = parseFloat(current_total) + amountDifference;
-
-      if (newTotal > parseFloat(total_income) + 0.01) { // Allow small floating point difference
-        return res.status(400).json({ 
-          message: `Total allocations (${newTotal.toFixed(2)}) would exceed total income (${total_income})`,
-          available: parseFloat(total_income) - (parseFloat(current_total) - parseFloat(oldAmount))
-        });
-      }
-
-      // Update the allocation
-      const updateSql = `
-        UPDATE budget_allocations 
-        SET allocated_amount = ?
-        WHERE allocation_id = ?
-      `;
-
-      db.query(updateSql, [allocated_amount, allocation_id], (err3, result) => {
-        if (err3) {
-          console.error("❌ DB Error updating allocation:", err3);
-          return res.status(500).json({ message: "Failed to update allocation" });
-        }
-
-        if (result.affectedRows === 0) {
-          return res.status(404).json({ message: "Allocation not found" });
-        }
-
-        res.json({ 
-          message: "✅ Budget allocation updated successfully",
-          new_total: newTotal
-        });
-      });
-    });
-  });
-});
-
 // ===================== DELETE BUDGET =====================
-
 app.delete("/delete-budget", (req, res) => {
   const { budget_id } = req.query;
 
@@ -1569,197 +1929,7 @@ app.delete("/delete-budget", (req, res) => {
   });
 });
 
-
-// ===================== GET REALLOCATABLE CATEGORIES =====================
-app.get("/reallocatable-categories", (req, res) => {
-  const { budget_id, category_type, exclude_allocation_id, user_id } = req.query;
-
-  if (!budget_id || !category_type || !exclude_allocation_id || !user_id) {
-    return res.status(400).json({ 
-      message: "Missing required parameters" 
-    });
-  }
-
-  // Get all categories of this type for the user, and check if they're already in the budget
-  const sql = `
-    SELECT 
-      c.category_id,
-      c.category_name,
-      c.category_type,
-      ba.allocation_id,
-      ba.allocated_amount,
-      CASE WHEN ba.allocation_id IS NOT NULL THEN 1 ELSE 0 END as in_budget
-    FROM categories c
-    LEFT JOIN budget_allocations ba ON c.category_id = ba.category_id 
-      AND ba.budget_id = ?
-      AND ba.allocation_id != ?
-    WHERE (c.user_id = ? OR c.user_id IS NULL)
-    AND c.category_type = ?
-    AND c.transaction_type = 'Expense'
-    ORDER BY in_budget DESC, c.category_name ASC
-  `;
-
-  db.query(sql, [budget_id, exclude_allocation_id, user_id, category_type], (err, results) => {
-    if (err) {
-      console.error("❌ DB Error fetching reallocatable categories:", err);
-      return res.status(500).json({ message: "Error fetching categories" });
-    }
-    res.json(results);
-  });
-});
-
-// ===================== REALLOCATE BUDGET =====================
-app.post("/reallocate-budget", (req, res) => {
-  const { 
-    budget_id,
-    source_allocation_id, 
-    target_category_id,
-    target_allocation_id,
-    new_source_amount, 
-    excess_amount 
-  } = req.body;
-
-  if (!budget_id || !source_allocation_id || !target_category_id || !new_source_amount || !excess_amount) {
-    return res.status(400).json({ message: "Missing required fields" });
-  }
-
-  if (parseFloat(new_source_amount) <= 0 || parseFloat(excess_amount) <= 0) {
-    return res.status(400).json({ message: "Amounts must be greater than 0" });
-  }
-
-  // Start transaction
-  db.beginTransaction((err) => {
-    if (err) {
-      console.error("❌ Transaction error:", err);
-      return res.status(500).json({ message: "Database error" });
-    }
-
-    // Update source allocation (reduce amount)
-    const updateSourceSql = `
-      UPDATE budget_allocations 
-      SET allocated_amount = ?
-      WHERE allocation_id = ?
-    `;
-
-    db.query(updateSourceSql, [new_source_amount, source_allocation_id], (err1) => {
-      if (err1) {
-        return db.rollback(() => {
-          console.error("❌ Error updating source allocation:", err1);
-          res.status(500).json({ message: "Failed to update source allocation" });
-        });
-      }
-
-      // Check if target category already has an allocation in this budget
-      if (target_allocation_id) {
-        // Update existing allocation
-        const getTargetSql = "SELECT allocated_amount FROM budget_allocations WHERE allocation_id = ?";
-        
-        db.query(getTargetSql, [target_allocation_id], (err2, targetResults) => {
-          if (err2) {
-            return db.rollback(() => {
-              console.error("❌ Error fetching target allocation:", err2);
-              res.status(500).json({ message: "Failed to fetch target allocation" });
-            });
-          }
-
-          if (targetResults.length === 0) {
-            return db.rollback(() => {
-              res.status(404).json({ message: "Target allocation not found" });
-            });
-          }
-
-          const currentTargetAmount = parseFloat(targetResults[0].allocated_amount);
-          const newTargetAmount = currentTargetAmount + parseFloat(excess_amount);
-
-          const updateTargetSql = `
-            UPDATE budget_allocations 
-            SET allocated_amount = ?
-            WHERE allocation_id = ?
-          `;
-
-          db.query(updateTargetSql, [newTargetAmount, target_allocation_id], (err3) => {
-            if (err3) {
-              return db.rollback(() => {
-                console.error("❌ Error updating target allocation:", err3);
-                res.status(500).json({ message: "Failed to update target allocation" });
-              });
-            }
-
-            // Commit transaction
-            db.commit((err4) => {
-              if (err4) {
-                return db.rollback(() => {
-                  console.error("❌ Commit error:", err4);
-                  res.status(500).json({ message: "Failed to save reallocation" });
-                });
-              }
-
-              res.json({
-                message: "✅ Budget reallocated successfully",
-                new_source_amount: parseFloat(new_source_amount),
-                new_target_amount: newTargetAmount
-              });
-            });
-          });
-        });
-      } else {
-        // Create new allocation for this category
-        const getCategoryTypeSql = "SELECT category_type FROM categories WHERE category_id = ?";
-        
-        db.query(getCategoryTypeSql, [target_category_id], (err2, categoryResults) => {
-          if (err2) {
-            return db.rollback(() => {
-              console.error("❌ Error fetching category type:", err2);
-              res.status(500).json({ message: "Failed to fetch category type" });
-            });
-          }
-
-          if (categoryResults.length === 0) {
-            return db.rollback(() => {
-              res.status(404).json({ message: "Category not found" });
-            });
-          }
-
-          const categoryType = categoryResults[0].category_type;
-
-          const insertAllocationSql = `
-            INSERT INTO budget_allocations (budget_id, category_id, allocated_amount, category_type)
-            VALUES (?, ?, ?, ?)
-          `;
-
-          db.query(insertAllocationSql, [budget_id, target_category_id, excess_amount, categoryType], (err3) => {
-            if (err3) {
-              return db.rollback(() => {
-                console.error("❌ Error creating new allocation:", err3);
-                res.status(500).json({ message: "Failed to create new allocation" });
-              });
-            }
-
-            // Commit transaction
-            db.commit((err4) => {
-              if (err4) {
-                return db.rollback(() => {
-                  console.error("❌ Commit error:", err4);
-                  res.status(500).json({ message: "Failed to save reallocation" });
-                });
-              }
-
-              res.json({
-                message: "✅ Budget reallocated successfully (new category added)",
-                new_source_amount: parseFloat(new_source_amount),
-                new_target_amount: parseFloat(excess_amount)
-              });
-            });
-          });
-        });
-      }
-    });
-  });
-});
-
-
 // ===================== START SERVER =====================
 app.listen(5000, "0.0.0.0", () => {
   console.log("🚀 Server running on port 5000");
 });
-

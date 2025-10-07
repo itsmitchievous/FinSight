@@ -1,8 +1,7 @@
 import React, { useState } from "react";
-import { View, Text, TextInput, Button, Alert, StyleSheet, TouchableOpacity } from "react-native";
+import { View, Text, TextInput, Button, Alert, StyleSheet, TouchableOpacity, Image } from "react-native";
 import { useRouter } from "expo-router";
-import { API_BASE_URL } from "../config"; // <-- import config
-
+import { API_BASE_URL } from "../config";
 
 export default function Signup() {
   const router = useRouter();
@@ -55,8 +54,9 @@ export default function Signup() {
 
         // Navigate to VerifyOTP with userId param
         router.push({
-          pathname: "account/VerifyOTP",
-          params: { userId: String(userId) },
+          pathname: "/account/VerifyOTP",
+          params: { userId: String(userId),
+          flow: "signup"},
         });
       } else {
         Alert.alert("Signup Failed", data.message || "Please try again.");
@@ -68,45 +68,91 @@ export default function Signup() {
   };
 
   return (
-    <View style={styles.container}>
+    <View style={styles.container}> 
       <Text style={styles.title}>Signup</Text>
 
       <TextInput
-        placeholder="Full Name"
         style={styles.input}
+        placeholder="Full Name"
         onChangeText={text => handleChange("full_name", text)}
       />
       <TextInput
-        placeholder="Email"
         style={styles.input}
+        placeholder="Email"
+        keyboardType="email-address"
+        autoCapitalize="none"
         onChangeText={text => handleChange("email_add", text)}
       />
       <TextInput
+      style={styles.input}
         placeholder="Password"
-        style={styles.input}
         secureTextEntry
         onChangeText={text => handleChange("password", text)}
       />
       <TextInput
-        placeholder="Confirm Password"
         style={styles.input}
+        placeholder="Confirm Password"
         secureTextEntry
         onChangeText={text => handleChange("confirm_password", text)}
       />
 
-      <Button title="Register" onPress={handleSubmit} />
+      <TouchableOpacity style={styles.button} onPress={handleSubmit}>
+        <Text style={styles.buttonText}>Sign Up</Text>
+      </TouchableOpacity>
 
-      <TouchableOpacity onPress={() => router.push("/Login")} style={{ marginTop: 10 }}>
-        <Text style={{ color: "blue", textAlign: "center" }}>
-          Already have an account? Login
-        </Text>
+      <TouchableOpacity onPress={() => router.push("/account/Login")}>
+        <Text style={styles.link}>Already have an account? Log In</Text>
       </TouchableOpacity>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { padding: 20 },
-  title: { fontSize: 24, marginBottom: 10 },
-  input: { borderWidth: 1, marginBottom: 10, padding: 8, borderRadius: 5 }
+  container: {
+    flex: 1,
+    backgroundColor: "#f8f9fa",
+    padding: 20,
+    justifyContent: "center",
+  },
+  logo: {
+    width: 120,
+    height: 120,
+    resizeMode: "contain",
+    alignSelf: "center",
+    marginBottom: 20,
+  },
+  title: {
+    fontSize: 26,
+    fontWeight: "bold",
+    marginBottom: 30,
+    textAlign: "center",
+    color: "#222",
+  },
+  input: {
+    height: 50,
+    borderColor: "#ccc",
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 15,
+    marginBottom: 15,
+    backgroundColor: "#fff",
+  },
+  button: {
+    backgroundColor: "#007bff",
+    paddingVertical: 15,
+    borderRadius: 10,
+    marginTop: 10,
+    marginBottom: 20,
+  },
+  buttonText: {
+    color: "#fff",
+    fontSize: 18,
+    fontWeight: "bold",
+    textAlign: "center",
+  },
+  link: {
+    color: "#007bff",
+    fontSize: 14,
+    textAlign: "center",
+  },
 });

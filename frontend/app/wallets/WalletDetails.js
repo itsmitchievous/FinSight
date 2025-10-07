@@ -5,11 +5,9 @@ import { useFocusEffect } from "@react-navigation/native";
 import { useCallback } from "react";
 import { API_BASE_URL } from "../config"; 
 
-
 export default function WalletDetails() {
   const [walletData, setWalletData] = useState(null);
   const [recentTransactions, setRecentTransactions] = useState([]);
-  const [budgetSummary, setBudgetSummary] = useState(null);
   const [loading, setLoading] = useState(true);
 
   const router = useRouter();
@@ -21,7 +19,6 @@ export default function WalletDetails() {
     useCallback(() => {
       fetchWalletDetails();
       fetchRecentTransactions();
-      fetchBudgetSummary();
     }, [numericUserId, numericWalletId])
   );
 
@@ -58,49 +55,6 @@ export default function WalletDetails() {
       }
     } catch (error) {
       console.error("Error fetching transactions:", error);
-    }
-  };
-
-  const fetchBudgetSummary = async () => {
-    try {
-      const response = await fetch(
-        `${API_BASE_URL}/wallet-budgets?user_id=${numericUserId}&wallet_id=${numericWalletId}`
-      );
-      const budgets = await response.json();
-
-      if (response.ok && budgets.length > 0) {
-        let totalAllocated = 0;
-        let totalSpent = 0;
-
-        // Fetch detailed allocations for each budget to get spent amounts
-        for (const budget of budgets) {
-          const detailsResponse = await fetch(
-            `${API_BASE_URL}/budget-details?budget_id=${budget.budget_id}`
-          );
-          const detailsData = await detailsResponse.json();
-
-          if (detailsResponse.ok && detailsData.allocations) {
-            detailsData.allocations.forEach(allocation => {
-              totalAllocated += parseFloat(allocation.allocated_amount) || 0;
-              totalSpent += parseFloat(allocation.spent_amount) || 0;
-            });
-          }
-        }
-
-        const totalRemaining = totalAllocated - totalSpent;
-
-        setBudgetSummary({
-          count: budgets.length,
-          total_allocated: totalAllocated,
-          total_spent: totalSpent,
-          total_remaining: totalRemaining
-        });
-      } else {
-        setBudgetSummary(null);
-      }
-    } catch (error) {
-      console.error("Error fetching budget summary:", error);
-      setBudgetSummary(null);
     }
   };
 
@@ -208,31 +162,6 @@ export default function WalletDetails() {
           </View>
         </View>
 
-        {/* Action Buttons */}
-        <View style={styles.actionButtons}>
-          <TouchableOpacity
-            style={[styles.actionButton, styles.incomeButton]}
-            onPress={() =>
-              router.push(
-                `income/AddIncome?userId=${numericUserId}&walletId=${numericWalletId}`
-              )
-            }
-          >
-            <Text style={styles.actionButtonText}>+ Add Income</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={[styles.actionButton, styles.expenseButton]}
-            onPress={() =>
-              router.push(
-                `expenses/AddExpenses?userId=${numericUserId}&walletId=${numericWalletId}`
-              )
-            }
-          >
-            <Text style={styles.actionButtonText}>+ Add Expense</Text>
-          </TouchableOpacity>
-        </View>
-
         {/* Recent Transactions */}
         <View style={styles.section}>
           <View style={styles.sectionHeader}>
@@ -252,7 +181,7 @@ export default function WalletDetails() {
             <View style={styles.emptyState}>
               <Text style={styles.emptyStateText}>No transactions yet</Text>
               <Text style={styles.emptyStateSubtext}>
-                Add your first income or expense above
+                Add income or expenses from the homepage
               </Text>
             </View>
           ) : (
@@ -296,87 +225,6 @@ export default function WalletDetails() {
               </TouchableOpacity>
             ))
           )}
-        </View>
-
-        {/* Budget Allocation */}
-        {budgetSummary && (
-          <View style={styles.section}>
-            <TouchableOpacity
-              style={styles.budgetSummaryCard}
-              onPress={() =>
-                router.push(
-                  `budget/BudgetList?userId=${numericUserId}&walletId=${numericWalletId}`
-                )
-              }
-              activeOpacity={0.7}
-            >
-              <View style={styles.budgetIconContainer}>
-                <Text style={styles.budgetIcon}>📊</Text>
-              </View>
-              <View style={styles.budgetSummaryContent}>
-                <View style={styles.budgetSummaryLeft}>
-                  <Text style={styles.budgetSummaryLabel}>Budget Allocation</Text>
-                  <Text style={styles.budgetSummarySubtext}>
-                    {budgetSummary.count} {budgetSummary.count === 1 ? 'active plan' : 'active plans'}
-                  </Text>
-                </View>
-                <View style={styles.budgetSummaryRight}>
-                  <View style={styles.budgetAmountContainer}>
-                    <Text style={[
-                      styles.budgetSummaryAmount,
-                      budgetSummary.total_remaining < 0 && styles.budgetOverspent
-                    ]}>
-                      ₱{budgetSummary.total_remaining?.toLocaleString()}
-                    </Text>
-                    <Text style={styles.budgetBreakdownText}>
-                      of ₱{budgetSummary.total_allocated?.toLocaleString()}
-                    </Text>
-                  </View>
-                  <Text style={styles.budgetViewText}>View details →</Text>
-                </View>
-              </View>
-            </TouchableOpacity>
-          </View>
-        )}
-
-        {/* Quick Actions */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Quick Actions</Text>
-          
-          {budgetSummary ? (
-            <TouchableOpacity
-              style={styles.quickActionButton}
-              onPress={() =>
-                router.push(
-                  `budget/BudgetList?userId=${numericUserId}&walletId=${numericWalletId}`
-                )
-              }
-            >
-              <Text style={styles.quickActionText}>📊 Manage Budget</Text>
-            </TouchableOpacity>
-          ) : (
-            <TouchableOpacity
-              style={styles.quickActionButton}
-              onPress={() =>
-                router.push(
-                  `budget/AddBudget?userId=${numericUserId}&walletId=${numericWalletId}`
-                )
-              }
-            >
-              <Text style={styles.quickActionText}>📊 Create Budget</Text>
-            </TouchableOpacity>
-          )}
-          
-          <TouchableOpacity
-            style={styles.quickActionButton}
-            onPress={() =>
-              router.push(
-                `categories/ManageCategories?userId=${numericUserId}&walletId=${numericWalletId}`
-              )
-            }
-          >
-            <Text style={styles.quickActionText}>🏷️ Manage Categories</Text>
-          </TouchableOpacity>
         </View>
       </ScrollView>
     </View>
@@ -473,38 +321,6 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     color: "#FF6B6B",
   },
-  budgetAmount: {
-    fontSize: 14,
-    fontWeight: "600",
-    color: "#4ECDC4",
-  },
-  actionButtons: {
-    flexDirection: "row",
-    gap: 15,
-    marginBottom: 25,
-  },
-  actionButton: {
-    flex: 1,
-    paddingVertical: 15,
-    borderRadius: 12,
-    alignItems: "center",
-    shadowColor: "#000",
-    shadowOpacity: 0.1,
-    shadowOffset: { width: 0, height: 2 },
-    shadowRadius: 4,
-    elevation: 3,
-  },
-  incomeButton: {
-    backgroundColor: "#00B14F",
-  },
-  expenseButton: {
-    backgroundColor: "#FF6B6B",
-  },
-  actionButtonText: {
-    color: "#fff",
-    fontSize: 16,
-    fontWeight: "bold",
-  },
   section: {
     marginBottom: 25,
   },
@@ -592,95 +408,6 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: "#999",
     textAlign: "center",
-  },
-  budgetSummaryCard: {
-    backgroundColor: "#fff",
-    borderRadius: 15,
-    padding: 20,
-    marginBottom: 10,
-    shadowColor: "#000",
-    shadowOpacity: 0.08,
-    shadowOffset: { width: 0, height: 3 },
-    shadowRadius: 6,
-    elevation: 4,
-    borderLeftWidth: 4,
-    borderLeftColor: "#6C5CE7",
-  },
-  budgetIconContainer: {
-    position: "absolute",
-    top: 15,
-    right: 15,
-    backgroundColor: "#F0EDFF",
-    borderRadius: 25,
-    width: 45,
-    height: 45,
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  budgetIcon: {
-    fontSize: 24,
-  },
-  budgetSummaryContent: {
-    flexDirection: "column",
-    paddingRight: 60,
-  },
-  budgetSummaryLeft: {
-    marginBottom: 12,
-  },
-  budgetSummaryLabel: {
-    fontSize: 18,
-    fontWeight: "700",
-    color: "#2D3436",
-    marginBottom: 4,
-  },
-  budgetSummarySubtext: {
-    fontSize: 13,
-    color: "#636E72",
-  },
-  budgetSummaryRight: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    paddingTop: 12,
-    borderTopWidth: 1,
-    borderTopColor: "#F0F0F0",
-  },
-  budgetAmountContainer: {
-    flexDirection: "column",
-  },
-  budgetSummaryAmount: {
-    fontSize: 24,
-    fontWeight: "bold",
-    color: "#6C5CE7",
-  },
-  budgetOverspent: {
-    color: "#FF6B6B",
-  },
-  budgetBreakdownText: {
-    fontSize: 11,
-    color: "#999",
-    marginTop: 2,
-  },
-  budgetViewText: {
-    fontSize: 12,
-    color: "#6C5CE7",
-    fontWeight: "600",
-  },
-  quickActionButton: {
-    backgroundColor: "#fff",
-    borderRadius: 12,
-    padding: 15,
-    marginBottom: 10,
-    shadowColor: "#000",
-    shadowOpacity: 0.05,
-    shadowOffset: { width: 0, height: 1 },
-    shadowRadius: 3,
-    elevation: 2,
-  },
-  quickActionText: {
-    fontSize: 16,
-    color: "#333",
-    fontWeight: "600",
   },
   loadingText: {
     fontSize: 16,

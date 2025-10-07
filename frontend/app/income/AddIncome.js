@@ -11,24 +11,26 @@ import {
 import { useRouter, useLocalSearchParams, useFocusEffect } from "expo-router";
 import { API_BASE_URL } from "../config"; 
 
-
 export default function AddIncome() {
   const router = useRouter();
-  const { userId, walletId } = useLocalSearchParams();
+  const { userId } = useLocalSearchParams();
   const numericUserId = Number(userId);
-  const numericWalletId = Number(walletId);
 
+  const [wallets, setWallets] = useState([]);
+  const [selectedWallet, setSelectedWallet] = useState(null);
+  const [showWalletDropdown, setShowWalletDropdown] = useState(false);
+  
   const [categories, setCategories] = useState([]);
   const [selectedCategory, setSelectedCategory] = useState(null);
-  const [showDropdown, setShowDropdown] = useState(false);
+  const [showCategoryDropdown, setShowCategoryDropdown] = useState(false);
+  
   const [amount, setAmount] = useState("");
   const [notes, setNotes] = useState("");
-  const [incomeDate, setIncomeDate] = useState(
-    new Date().toISOString().split("T")[0]
-  );
+  const [incomeDate, setIncomeDate] = useState(new Date().toISOString().split("T")[0]);
   const [isLoading, setIsLoading] = useState(false);
 
   useEffect(() => {
+    fetchWallets();
     fetchCategories();
   }, []);
 
@@ -38,6 +40,21 @@ export default function AddIncome() {
     }, [])
   );
 
+  const fetchWallets = async () => {
+    try {
+      const response = await fetch(`${API_BASE_URL}/wallets?user_id=${numericUserId}`);
+      const data = await response.json();
+      if (response.ok) {
+        setWallets(data);
+      } else {
+        Alert.alert("Error", "Failed to fetch wallets");
+      }
+    } catch (error) {
+      console.error("Error fetching wallets:", error);
+      Alert.alert("Error", "Network error. Please try again.");
+    }
+  };
+
   const fetchCategories = async () => {
     try {
       const response = await fetch(
@@ -46,26 +63,27 @@ export default function AddIncome() {
       const data = await response.json();
       if (response.ok) {
         setCategories(data);
-      } else {
-        Alert.alert("Error", "Failed to fetch categories");
       }
     } catch (error) {
       console.error("Error fetching categories:", error);
-      Alert.alert("Error", "Network error. Please try again.");
     }
+  };
+
+  const handleWalletSelect = (wallet) => {
+    setSelectedWallet(wallet);
+    setShowWalletDropdown(false);
   };
 
   const handleCategorySelect = (category) => {
     setSelectedCategory(category);
-    setShowDropdown(false);
-  };
-
-  const handleAddNewCategory = () => {
-    setShowDropdown(false);
-    router.push(`/categories/AddCategory?userId=${numericUserId}&transactionType=Income`);
+    setShowCategoryDropdown(false);
   };
 
   const handleSave = async () => {
+    if (!selectedWallet) {
+      Alert.alert("Error", "Please select a wallet");
+      return;
+    }
     if (!selectedCategory) {
       Alert.alert("Error", "Please select a category");
       return;
@@ -83,7 +101,7 @@ export default function AddIncome() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           user_id: numericUserId,
-          wallet_id: numericWalletId,
+          wallet_id: selectedWallet.wallet_id,
           category_id: selectedCategory.category_id,
           amount: parseFloat(amount),
           notes: notes.trim(),
@@ -113,28 +131,51 @@ export default function AddIncome() {
         <Text style={styles.title}>ADD INCOME</Text>
 
         <View style={styles.formCard}>
+          {/* Wallet Selection */}
+          <Text style={styles.label}>Select Wallet *</Text>
+          <TouchableOpacity
+            style={styles.dropdown}
+            onPress={() => setShowWalletDropdown(!showWalletDropdown)}
+          >
+            <Text style={[styles.dropdownText, !selectedWallet && styles.placeholder]}>
+              {selectedWallet ? selectedWallet.wallet_name : "Select a wallet"}
+            </Text>
+            <Text style={styles.dropdownArrow}>{showWalletDropdown ? "▲" : "▼"}</Text>
+          </TouchableOpacity>
+
+          {showWalletDropdown && (
+            <View style={styles.dropdownList}>
+              <ScrollView nestedScrollEnabled style={{ maxHeight: 150 }}>
+                {wallets.map((wallet) => (
+                  <TouchableOpacity
+                    key={wallet.wallet_id}
+                    style={[
+                      styles.dropdownItem,
+                      selectedWallet?.wallet_id === wallet.wallet_id && styles.selectedItem,
+                    ]}
+                    onPress={() => handleWalletSelect(wallet)}
+                  >
+                    <Text style={styles.walletName}>{wallet.wallet_name}</Text>
+                    <Text style={styles.walletType}>({wallet.wallet_type})</Text>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            </View>
+          )}
+
           {/* Category Dropdown */}
           <Text style={styles.label}>Category *</Text>
           <TouchableOpacity
             style={styles.dropdown}
-            onPress={() => setShowDropdown(!showDropdown)}
+            onPress={() => setShowCategoryDropdown(!showCategoryDropdown)}
           >
-            <Text
-              style={[
-                styles.dropdownText,
-                !selectedCategory && styles.placeholder,
-              ]}
-            >
-              {selectedCategory
-                ? selectedCategory.category_name
-                : "Select a category"}
+            <Text style={[styles.dropdownText, !selectedCategory && styles.placeholder]}>
+              {selectedCategory ? selectedCategory.category_name : "Select a category"}
             </Text>
-            <Text style={styles.dropdownArrow}>
-              {showDropdown ? "▲" : "▼"}
-            </Text>
+            <Text style={styles.dropdownArrow}>{showCategoryDropdown ? "▲" : "▼"}</Text>
           </TouchableOpacity>
 
-          {showDropdown && (
+          {showCategoryDropdown && (
             <View style={styles.dropdownList}>
               <ScrollView nestedScrollEnabled style={{ maxHeight: 200 }}>
                 {categories.map((category) => (
@@ -142,21 +183,21 @@ export default function AddIncome() {
                     key={category.category_id}
                     style={[
                       styles.dropdownItem,
-                      selectedCategory?.category_id === category.category_id &&
-                        styles.selectedItem,
+                      selectedCategory?.category_id === category.category_id && styles.selectedItem,
                     ]}
                     onPress={() => handleCategorySelect(category)}
                   >
-                    <Text style={styles.categoryName}>
-                      {category.category_name}
-                    </Text>
+                    <Text style={styles.categoryName}>{category.category_name}</Text>
                   </TouchableOpacity>
                 ))}
 
                 {/* Add Category Option */}
                 <TouchableOpacity
                   style={[styles.dropdownItem, styles.addCategoryItem]}
-                  onPress={handleAddNewCategory}
+                  onPress={() => {
+                    setShowCategoryDropdown(false);
+                    router.push(`/categories/AddCategory?userId=${numericUserId}&transactionType=Income`);
+                  }}
                 >
                   <Text style={styles.addCategoryBtnText}>
                     + Add New Category
@@ -253,8 +294,6 @@ const styles = StyleSheet.create({
     marginBottom: 20,
     fontSize: 16,
   },
-
-  // Dropdown
   dropdown: {
     borderWidth: 1,
     borderColor: "#ddd",
@@ -286,10 +325,9 @@ const styles = StyleSheet.create({
     borderBottomColor: "#f0f0f0",
   },
   selectedItem: { backgroundColor: "#f0fdf4" },
+  walletName: { fontSize: 16, color: "#333", fontWeight: "600" },
+  walletType: { fontSize: 12, color: "#666", marginTop: 2 },
   categoryName: { fontSize: 16, color: "#333" },
-  addCategoryItem: { backgroundColor: "#f9f9f9" },
-  addCategoryBtnText: { fontSize: 16, color: "#00B14F", fontWeight: "600" },
-
   notesInput: {
     borderWidth: 1,
     borderColor: "#ccc",
@@ -298,8 +336,6 @@ const styles = StyleSheet.create({
     height: 80,
     textAlignVertical: "top",
   },
-
-  // Buttons
   saveButton: {
     backgroundColor: "#00B14F",
     paddingVertical: 16,

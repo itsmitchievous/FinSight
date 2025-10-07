@@ -34,6 +34,10 @@ CREATE TABLE otps (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users(user_id)
 );
+
+ALTER TABLE otps
+MODIFY otp_code VARCHAR(255);
+
 -- email: finsightapplication.email@gmail.com
 -- email pass: group1finsightprojman
 
@@ -187,6 +191,9 @@ CREATE TABLE budget_allocations (
 );
 
 
+
+-- DRFATS
+
 -- SAVINGS JARS
 CREATE TABLE savings_jars (
     savings_jar_id INT AUTO_INCREMENT PRIMARY KEY,
@@ -237,4 +244,15 @@ CREATE TABLE ai_chat (
     FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
 );
 
+-- First, add wallet_id to budget_allocations to track which wallet each allocation is for
+ALTER TABLE budget_allocations 
+ADD COLUMN wallet_id INT NULL AFTER category_id,
+ADD FOREIGN KEY (wallet_id) REFERENCES wallets(wallet_id) ON DELETE CASCADE;
 
+-- Make wallet_id nullable in budgets table since budgets now span multiple wallets
+ALTER TABLE budgets 
+MODIFY wallet_id INT NULL;
+
+-- Add index for better query performance
+ALTER TABLE budget_allocations 
+ADD INDEX idx_wallet_allocations (wallet_id);

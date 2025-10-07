@@ -10,12 +10,12 @@ export default function Homepage() {
   const [creditCards, setCreditCards] = useState([]);
   const [greeting, setGreeting] = useState("Hello");
   const [activeTab, setActiveTab] = useState("wallets");
+  const [hasBudgets, setHasBudgets] = useState(false);
 
   const router = useRouter();
   const { userId } = useLocalSearchParams();
   const numericUserId = Number(userId);
 
-  // Greeting logic
   useEffect(() => {
     const hour = new Date().getHours();
     if (hour >= 5 && hour < 12) setGreeting("Good morning");
@@ -28,42 +28,56 @@ export default function Homepage() {
     useCallback(() => {
       if (!numericUserId) return;
 
-      // Fetch user
       fetch(`${API_BASE_URL}/user?user_id=${numericUserId}`)
         .then(res => res.json())
         .then(data => setUserName(data.full_name || data.name || "User"))
         .catch(() => setUserName("User"));
 
-      // Fetch wallets
       fetch(`${API_BASE_URL}/wallets?user_id=${numericUserId}`)
         .then(res => res.json())
         .then(data => setWallets(Array.isArray(data) ? data : []))
         .catch(() => setWallets([]));
 
-      // Fetch credit cards
       fetch(`${API_BASE_URL}/credit-cards?user_id=${numericUserId}`)
         .then(res => res.json())
         .then(data => setCreditCards(Array.isArray(data) ? data : []))
         .catch(() => setCreditCards([]));
+
+      // Check if user has any budgets
+      fetch(`${API_BASE_URL}/user-budgets?user_id=${numericUserId}`)
+        .then(res => res.json())
+        .then(data => setHasBudgets(Array.isArray(data) && data.length > 0))
+        .catch(() => setHasBudgets(false));
     }, [numericUserId])
   );
 
-  // Handler for wallet card press
   const handleWalletPress = (wallet) => {
-    // Navigate to wallet details page, passing both userId and walletId
     router.push(`wallets/WalletDetails?userId=${numericUserId}&walletId=${wallet.wallet_id}`);
   };
 
-  // Handler for credit card press
   const handleCreditCardPress = (card) => {
-    // Navigate to credit card details page
     router.push(`/CreditCardDetails?userId=${numericUserId}&cardId=${card.credit_wallet_id}`);
+  };
+
+  const handleAddExpense = () => {
+    router.push(`/expenses/AddExpenses?userId=${numericUserId}`);
+  };
+
+  const handleAddIncome = () => {
+    router.push(`/income/AddIncome?userId=${numericUserId}`);
+  };
+
+  const handleBudget = () => {
+    if (hasBudgets) {
+      router.push(`/budget/BudgetList?userId=${numericUserId}`);
+    } else {
+      router.push(`/budget/AddBudget?userId=${numericUserId}`);
+    }
   };
 
   return (
     <View style={styles.mainContainer}>
-      <ScrollView style={styles.container}>
-        {/* Greeting */}
+      <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
         <Text style={styles.greeting}>{greeting}, {userName}!</Text>
 
         {/* Tabs */}
@@ -91,7 +105,6 @@ export default function Homepage() {
         {activeTab === "wallets" && (
           <View>
             {wallets.length === 0 ? (
-              // Blank state
               <View style={styles.blankState}>
                 <Text style={styles.blankTitle}>No wallets yet</Text>
                 <Text style={styles.blankSubtitle}>
@@ -105,7 +118,6 @@ export default function Homepage() {
                 </TouchableOpacity>
               </View>
             ) : (
-              // Show wallets
               <View>
                 {wallets.map(wallet => (
                   <TouchableOpacity
@@ -172,6 +184,41 @@ export default function Homepage() {
             </TouchableOpacity>
           </View>
         )}
+
+        {/* Quick Action Buttons */}
+        <View style={styles.quickActionsSection}>
+          <Text style={styles.quickActionsTitle}>Quick Actions</Text>
+          
+          <TouchableOpacity 
+            style={[styles.actionBtn, styles.incomeBtn]}
+            onPress={handleAddIncome}
+          >
+            <Text style={styles.actionBtnText}>+ Add Income</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity 
+            style={[styles.actionBtn, styles.expenseBtn]}
+            onPress={handleAddExpense}
+          >
+            <Text style={styles.actionBtnText}>- Add Expense</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity 
+            style={[styles.actionBtn, styles.budgetBtn]}
+            onPress={handleBudget}
+          >
+            <Text style={styles.actionBtnText}>
+              {hasBudgets ? "📊 Manage Budget" : "📊 Create Budget"}
+            </Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity 
+            style={[styles.actionBtn, styles.manageCategoriesBtn]}
+            onPress={() => router.push(`/categories/ManageCategories?userId=${numericUserId}`)}
+          >
+            <Text style={styles.actionBtnText}>Manage Categories</Text>
+          </TouchableOpacity>
+        </View>
       </ScrollView>
 
       {/* Bottom Navigation Ribbon */}
@@ -213,7 +260,7 @@ export default function Homepage() {
 
 const styles = StyleSheet.create({
   mainContainer: { flex: 1, backgroundColor: "#f5f5f5" },
-  container: { flex: 1, padding: 20 },
+  container: { flex: 1, padding: 20, paddingBottom: 80 },
   greeting: { fontSize: 24, fontWeight: "bold", marginBottom: 15, color: "#333" },
   tabs: { flexDirection: "row", marginBottom: 15 },
   tab: {
@@ -265,6 +312,7 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     alignItems: "center",
     marginTop: 10,
+    marginBottom: 15,
   },
   addButtonText: { color: "#fff", fontWeight: "600" },
   blankState: { alignItems: "center", marginTop: 50, padding: 20 },
@@ -274,6 +322,53 @@ const styles = StyleSheet.create({
     color: "#666",
     marginBottom: 20,
     textAlign: "center",
+  },
+  quickActionsSection: {
+    marginTop: 10,
+    marginBottom: 20,
+    backgroundColor: "#fff",
+    borderRadius: 12,
+    padding: 20,
+    shadowColor: "#000",
+    shadowOpacity: 0.1,
+    shadowOffset: { width: 0, height: 2 },
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  quickActionsTitle: {
+    fontSize: 18,
+    fontWeight: "bold",
+    color: "#333",
+    marginBottom: 15,
+  },
+  actionBtn: {
+    paddingVertical: 14,
+    borderRadius: 10,
+    alignItems: "center",
+    marginBottom: 12,
+    shadowColor: "#000",
+    shadowOpacity: 0.1,
+    shadowOffset: { width: 0, height: 1 },
+    shadowRadius: 3,
+    elevation: 2,
+  },
+  incomeBtn: {
+    backgroundColor: "#00B14F",
+  },
+  expenseBtn: {
+    backgroundColor: "#E63946",
+  },
+  budgetBtn: {
+    backgroundColor: "#6C5CE7",
+  },
+  manageCategoriesBtn: {
+    backgroundColor: "#6C63FF",
+    marginBottom: 0,
+  },
+  actionBtnText: {
+    color: "#fff",
+    fontSize: 16,
+    fontWeight: "600",
   },
   bottomNavigation: {
     flexDirection: "row",
